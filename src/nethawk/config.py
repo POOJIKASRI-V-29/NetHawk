@@ -22,6 +22,7 @@ DATA_DIR = _path_from_env("NETHAWK_DATA_DIR", PROJECT_ROOT / "data")
 CICIDS_DIR = _path_from_env("NETHAWK_CICIDS_DIR", DATA_DIR / "cicids2017")
 DEMO_DATA_DIR = DATA_DIR / "demo"
 DEMO_DATASET_PATH = DEMO_DATA_DIR / "nethawk_demo_traffic.csv"
+SAMPLE_PCAP_PATH = DEMO_DATA_DIR / "sample_traffic.pcap"
 
 MODELS_DIR = _path_from_env("NETHAWK_MODELS_DIR", PROJECT_ROOT / "models")
 MODEL_PATH = MODELS_DIR / "nethawk_rf.joblib"

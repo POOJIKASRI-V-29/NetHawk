@@ -45,7 +45,11 @@ def main() -> int:
         print(f"[NetHawk] Found {len(csvs)} CIC-IDS2017 CSV file(s):")
         for path in csvs:
             print(f"    - {path.name}  ({path.stat().st_size / 1e6:.1f} MB)")
-        dataset = load_cicids()
+        try:
+            dataset = load_cicids()
+        except ValueError as exc:
+            print(f"[NetHawk] ERROR: those CSVs are not usable: {exc}")
+            return 1
         print(f"[NetHawk] Cleaned real dataset: {len(dataset.frame)} rows")
     else:
         print("[NetHawk] No CIC-IDS2017 CSVs found - see data/README.md for the download steps.")

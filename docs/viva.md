@@ -113,7 +113,14 @@ is analysed once it has been idle for 5 seconds.
 **Monitor mode** goes one step further: it puts a Wi-Fi adapter into a state
 where it captures raw 802.11 frames from all nearby traffic, not just decrypted
 IP packets for the associated network. NetHawk detects monitor mode but does not
-require it.
+require it, does not use it and never enables it.
+
+**Status on our machine:** live capture is verified working. Measured: 84
+packets captured on loopback and 66 packets on the Wi-Fi interface `en0`,
+assembled into flows, classified `NORMAL` with risk 0 and stored with
+`mode=LIVE`. It runs without `sudo` because Wireshark's ChmodBPF helper is
+installed and the account is in the `access_bpf` group; on a machine without
+that, NetHawk needs `sudo` and falls back to DEMO mode if denied.
 
 ### 11. What is Scapy?
 
@@ -182,6 +189,10 @@ the engine posts the exact reason plus a platform-specific hint and starts DEMO
 mode instead. The application never crashes and the demonstration always runs.
 This is tested (`tests/test_pipeline.py::test_live_mode_falls_back_to_demo_without_privileges`).
 
+There is also a middle option: **replay mode** reads real packets from a
+`.pcap` file through the same Scapy dissection path, so the real packet
+pipeline can be demonstrated even with no privileges at all.
+
 ### 17. How is the model evaluated?
 
 A stratified 75/25 train/test split, then on the held-out test set:
@@ -199,20 +210,34 @@ re-running `scripts/train_model.py`.
 *Macro-F1 is reported because the classes are imbalanced — benign traffic is
 3× any attack class, so plain accuracy would flatter the model.*
 
+We also run 5-fold stratified cross-validation (demo data: macro-F1
+0.9982 ± 0.0004) so the result does not rest on one lucky split, and a
+feature-reliance audit that retrains with `Destination Port` zeroed out
+(macro-F1 drops only 0.0008, so the model is using behaviour, not the port).
+Both come from `python3 scripts/evaluate_model.py --cv 5 --audit-port`.
+
 ### 18. What are the limitations?
 
 1. The shipped model is trained on synthetic demo data; its metrics are demo
    metrics.
 2. CIC-IDS2017 is not 802.11-specific, so NetHawk detects network-layer
    intrusions, not Wi-Fi link-layer attacks such as deauthentication.
-3. Live features come from NetHawk's own flow assembler, not CICFlowMeter, so
-   applying a CIC-IDS2017 model to live traffic is cross-domain inference.
-4. No 802.11 frame parsing; monitor mode is detected but unused.
+3. **Cross-domain accuracy is uneven, and we measured it.** On replayed real
+   packets the SYN flood was correctly detected as DDoS (risk 74) and the port
+   scan as Port Scan, but benign HTTPS and DNS flows were false-positived
+   (Web Attack 0.54–0.67; Port Scan 0.60), and confidence on real traffic is
+   around 0.5 versus around 1.0 on demo data. Cause: our flow assembler
+   follows the CIC-IDS2017 definitions but is not CICFlowMeter, and the model
+   is trained on synthetic statistics.
+4. No 802.11 frame parsing; monitor mode is detected but unused. No SSID,
+   BSSID or MAC-layer fields are read — devices are keyed by IP address.
 5. Responses are simulated — there is no enforcement backend.
-6. Live mode requires root privileges.
+6. Live mode requires capture privileges (verified working on our Mac without
+   `sudo`; elsewhere it needs `sudo`).
 7. Supervised only: a genuinely novel attack may be missed or land in
    "Other Suspicious".
 8. Single host, single user; no distributed sensors or alert forwarding.
+9. No PyInstaller packaging yet — the deck lists it, the code does not have it.
 
 ### 19. What is a flow, and why analyse flows instead of packets?
 
@@ -243,3 +268,79 @@ is contacted, and no real or third-party network is involved.
 Integrate AWID3 for genuine 802.11 attack detection, add 802.11 frame parsing
 from a monitor-mode adapter, add an unsupervised anomaly detector alongside the
 classifier for unknown attacks, and package the app with PyInstaller.
+
+### 23. You have three traffic sources. Why not just one?
+
+Because each answers a different question, and only one of them can be relied
+on in a classroom:
+
+* **DEMO** — locally generated flows. No privileges, no dataset, no network.
+  This is what guarantees the demonstration runs.
+* **REPLAY** — real packets read from a `.pcap` with Scapy's
+  `sniff(offline=...)`. This proves the *real* packet path works — dissection,
+  flow assembly, feature extraction — without needing capture privileges.
+* **LIVE** — real packets captured from an interface. This is the production
+  path, and it needs privileges.
+
+All three feed the identical model, risk scorer, decision engine, database and
+dashboard. Only the first stage differs, which is exactly what the adapter
+layer is for. Demo mode alone would be unconvincing (the generator also
+produced the training data); replay and live are the honest tests.
+
+### 24. A SYN flood opens a new source port per packet. Doesn't that break flow-based detection?
+
+Yes, and handling it is a real design decision in NetHawk. With strict 5-tuple
+accounting, 900 flood packets become 900 separate one-packet flows: each looks
+like one stray probe and the packet *rate* that defines a flood disappears.
+
+So before analysis NetHawk merges storms of tiny flows that share
+`(source, destination, protocol, destination port)`. Grouping by destination
+**port** is the key, because it separates the two reconnaissance patterns:
+
+* a flood sends hundreds of micro-flows to **one** port → merged into one
+  high-rate record → DoS/DDoS
+* a scan sends one or two micro-flows per port across **many** ports → each
+  group stays below the threshold → left alone → still looks like a scan
+
+Only groups of at least five flows of at most two packets each are merged, so
+ordinary conversations are untouched. Measured on our sample capture: 981
+packets → 24 flows, flood detected as DDoS at risk 74, scan still detected as
+Port Scan.
+
+### 25. How do you know your evaluation isn't leaking test data into training?
+
+We found and fixed two leakage problems during the audit, and both now have
+regression tests:
+
+1. **Cross-file duplicates.** Each CSV was de-duplicated on its own, but
+   CIC-IDS2017 ships eight files and a flow present in two of them survived
+   into the combined frame — so the same row could appear in both the train and
+   the test split. We now de-duplicate after concatenation and report how many
+   rows were removed.
+2. **Biased sampling.** Large files were truncated with `nrows=N`, which keeps
+   only the *first* N rows. The CSVs are time-ordered and each day's attacks are
+   clustered, so truncation can drop whole classes: on a label-ordered test file
+   head-truncation kept **1** class while random sampling kept **7**. Sampling is
+   now random and seeded.
+
+We also use a stratified split, report macro-F1 because of the 3:1 imbalance,
+and cross-validate.
+
+### 26. Why does the risk score damp the rate for tiny flows?
+
+Because a rate measured over one or two packets is not a load. A single-packet
+flow lasting 200 microseconds reports hundreds of thousands of packets per
+second — we have seen 1,000,000 pkt/s on a one-packet scan flow in the replay
+output. Without damping, every stray probe would score like a flood. So the
+intensity term is scaled by `packets / 10` until a flow has at least ten
+packets. The scan then scores MEDIUM (around 59) on category and confidence,
+while a genuine 900-packet flood scores HIGH (around 74–98).
+
+### 27. What would make the biggest difference if you continued this project?
+
+Training on real data, in two steps. First CIC-IDS2017, to get honest
+network-intrusion metrics instead of demo-generator metrics. Then AWID3 with a
+monitor-mode capture path, which is what would let NetHawk genuinely detect
+Wi-Fi link-layer attacks such as deauthentication and evil twin — the thing the
+project title promises and the current MVP does not do. The adapter seam for
+that already exists; nothing else in the pipeline would need to change.

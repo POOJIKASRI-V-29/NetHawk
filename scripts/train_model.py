@@ -31,14 +31,25 @@ def main() -> int:
 
     config.ensure_directories()
 
-    if args.demo:
-        dataset = load_demo()
-    elif args.data_dir:
-        dataset = load_cicids(Path(args.data_dir))
-    else:
-        found = find_cicids_csvs()
-        print(f"[NetHawk] CIC-IDS2017 CSVs found in {config.CICIDS_DIR}: {len(found)}")
-        dataset = load_training_data()
+    try:
+        if args.demo:
+            dataset = load_demo()
+        elif args.data_dir:
+            dataset = load_cicids(Path(args.data_dir))
+        else:
+            found = find_cicids_csvs()
+            print(f"[NetHawk] CIC-IDS2017 CSVs found in {config.CICIDS_DIR}: {len(found)}")
+            dataset = load_training_data()
+    except FileNotFoundError as exc:
+        print(f"[NetHawk] ERROR: {exc}")
+        print("[NetHawk] Train on the bundled demo dataset instead with:")
+        print("[NetHawk]     python3 scripts/train_model.py --demo")
+        return 1
+    except ValueError as exc:
+        print(f"[NetHawk] ERROR: the dataset could not be used: {exc}")
+        print("[NetHawk] Check that the CSVs are CIC-IDS2017 flow exports "
+              "(see data/README.md).")
+        return 1
 
     print(f"[NetHawk] Dataset : {dataset.summary()}")
     if dataset.source == SOURCE_DEMO:

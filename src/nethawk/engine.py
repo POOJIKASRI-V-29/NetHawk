@@ -19,12 +19,14 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from . import config
 from .capture.demo import DemoTrafficGenerator, TrafficRecord
 from .capture.flows import Flow
 from .capture.live import CaptureStatus, LiveCapture, capture_available, platform_hint
+from .capture.replay import PcapReplay
 from .database.db import Database, now
 from .detection.classifier import describe, is_attack
 from .features.adapters import (
@@ -34,7 +36,7 @@ from .features.adapters import (
 from .ml.predictor import Predictor
 from .response.engine import DecisionEngine
 from .risk.scoring import score_event
-from .schema import MODE_DEMO, MODE_LIVE
+from .schema import MODE_DEMO, MODE_LIVE, MODE_REPLAY
 
 
 @dataclass
@@ -62,7 +64,9 @@ class NetHawkEngine:
     def __init__(self, database: Database | None = None,
                  predictor: Predictor | None = None,
                  mode: str = MODE_DEMO,
-                 demo_seed: int | None = None) -> None:
+                 demo_seed: int | None = None,
+                 interface: str | None = None,
+                 bpf_filter: str | None = None) -> None:
         config.ensure_directories()
         self.db = database or Database()
         self.predictor = predictor or Predictor()
@@ -72,6 +76,8 @@ class NetHawkEngine:
         self.live_adapter = LiveTrafficFeatureAdapter()
 
         self.mode = mode
+        self.interface = interface
+        self.bpf_filter = bpf_filter
         self.monitoring = False
         self.stats = EngineStats()
         self.messages: "queue.Queue[EngineMessage]" = queue.Queue()
@@ -81,6 +87,7 @@ class NetHawkEngine:
         self._demo_thread: threading.Thread | None = None
         self._sim_thread: threading.Thread | None = None
         self._live: LiveCapture | None = None
+        self._replay: PcapReplay | None = None
         self._lock = threading.Lock()
         self.on_message: Callable[[EngineMessage], None] | None = None
 
@@ -197,16 +204,22 @@ class NetHawkEngine:
         self._stop.clear()
 
         if requested == MODE_LIVE:
-            self.capture_status = capture_available()
+            self.capture_status = capture_available(self.interface)
             if self.capture_status.available:
-                self._live = LiveCapture(on_flow=self._on_live_flow)
+                self._live = LiveCapture(on_flow=self._on_live_flow,
+                                         interface=self.interface,
+                                         bpf_filter=self.bpf_filter)
                 if self._live.start():
                     self.mode = MODE_LIVE
                     self.monitoring = True
                     self.stats.started_at = time.time()
                     self.db.record_status(self.mode, True, note="live capture started")
-                    self.notice(f"LIVE capture started on {self._live.interface or 'default interface'}.",
-                                "success")
+                    scope = (f" filter='{self.bpf_filter}'" if self.bpf_filter
+                             else " (no filter - all visible traffic)")
+                    self.notice(
+                        f"LIVE capture started on "
+                        f"{self._live.interface or 'default interface'}{scope}.",
+                        "success")
                     self._emit("mode", mode=self.mode)
                     return self.mode
                 self.notice(f"Could not start sniffer: {self._live.last_error}", "error")
@@ -237,6 +250,11 @@ class NetHawkEngine:
         if self._demo_thread is not None:
             self._demo_thread.join(timeout=3.0)
             self._demo_thread = None
+        if self._sim_thread is not None:
+            # A running simulation sees _stop and breaks out; join it so
+            # shutdown is clean rather than relying on the daemon flag.
+            self._sim_thread.join(timeout=3.0)
+            self._sim_thread = None
         self.monitoring = False
         self.db.record_status(self.mode, False,
                               packets_seen=self.stats.packets_seen,
@@ -283,6 +301,63 @@ class NetHawkEngine:
         self._sim_thread = threading.Thread(target=_run, daemon=True,
                                             name="nethawk-simulation")
         self._sim_thread.start()
+
+    # ------------------------------------------------------------- replay ---
+    def replay_pcap(self, path=None, blocking: bool = False) -> int:
+        """Replay a capture file through the real packet-parsing path.
+
+        This uses the same Scapy dissection, flow assembler and feature adapter
+        as LIVE mode, but reads frames from a file, so it needs no privileges.
+        Returns the number of flows analysed (0 when run non-blocking).
+        """
+        using_default = path is None
+        path = Path(path) if path else config.SAMPLE_PCAP_PATH
+        if not path.exists():
+            if not using_default:
+                self.notice(f"Capture file not found: {path}", "error")
+                return 0
+            # The bundled sample is generated on demand, so a fresh clone can
+            # run replay mode without any preparation step.
+            try:
+                from .capture.sample import write_sample_pcap
+                path, count = write_sample_pcap(path)
+                self.notice(f"Generated the sample capture ({count} packets) at "
+                            f"{path.name} - nothing was transmitted.", "info")
+            except Exception as exc:
+                self.notice(f"Could not generate the sample capture: {exc}. "
+                            f"Run: python3 scripts/make_sample_pcap.py", "error")
+                return 0
+
+        analysed = {"flows": 0}
+
+        def on_flow(flow) -> None:
+            try:
+                self.process_record(flow, source_mode=MODE_REPLAY)
+                analysed["flows"] += 1
+            except Exception as exc:
+                self.notice(f"Replay analysis error: {exc}", "error")
+
+        self._replay = PcapReplay(on_flow=on_flow, path=path)
+        self.notice(f"Replaying {Path(path).name} through the live packet path "
+                    f"(real Scapy dissection, no privileges needed).", "warning")
+
+        if blocking:
+            flows = self._replay.read_all()
+            self.notice(f"Replay complete: {self._replay.packet_count} packets parsed, "
+                        f"{flows} flows analysed.", "success")
+            return analysed["flows"]
+
+        def _watch() -> None:
+            self._replay.wait(timeout=120)
+            self.notice(f"Replay complete: {self._replay.packet_count} packets parsed, "
+                        f"{analysed['flows']} flows analysed.", "success")
+            self._emit("stats", stats=self.stats.as_dict())
+
+        if self._replay.start():
+            threading.Thread(target=_watch, daemon=True, name="nethawk-replay-watch").start()
+        else:
+            self.notice(f"Replay failed: {self._replay.last_error}", "error")
+        return 0
 
     # -------------------------------------------------------------- state ---
     def snapshot(self) -> dict[str, Any]:

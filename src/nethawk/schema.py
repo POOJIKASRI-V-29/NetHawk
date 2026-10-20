@@ -93,6 +93,8 @@ CATEGORY_DESCRIPTION: dict[str, str] = {
 
 MODE_DEMO = "DEMO"
 MODE_LIVE = "LIVE"
+# Replay reads frames from a .pcap file through the LIVE packet path.
+MODE_REPLAY = "REPLAY"
 
 RISK_LOW = "LOW"
 RISK_MEDIUM = "MEDIUM"

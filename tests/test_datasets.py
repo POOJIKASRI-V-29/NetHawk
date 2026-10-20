@@ -86,3 +86,28 @@ def test_vector_from_dict_orders_and_sanitises():
     assert len(vector) == len(FEATURE_NAMES)
     assert vector[FEATURE_NAMES.index("Destination Port")] == 80.0
     assert vector[FEATURE_NAMES.index("Flow Duration")] == 0.0   # inf sanitised
+
+
+# ------------------------------------------- leakage + sampling regressions --
+def test_cross_file_duplicates_are_dropped_before_splitting(tmp_path):
+    """Two CSVs sharing rows must not leak the same flow into train AND test."""
+    frame = generate_dataset(rows_per_class=20, seed=5)
+    frame.iloc[:120].to_csv(tmp_path / "Monday-WorkingHours.pcap_ISCX.csv", index=False)
+    frame.iloc[60:180].to_csv(tmp_path / "Tuesday-WorkingHours.pcap_ISCX.csv", index=False)
+
+    dataset = load_cicids(tmp_path)
+    assert dataset.duplicates_removed > 0
+    assert not dataset.frame.duplicated().any()
+    assert "duplicate rows dropped" in dataset.summary()
+
+
+def test_large_files_are_sampled_randomly_not_truncated(tmp_path):
+    """Head-truncation of a time/label-ordered CSV can drop whole classes."""
+    frame = generate_dataset(rows_per_class=100, seed=1).sort_values(LABEL_COLUMN)
+    path = tmp_path / "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
+    frame.to_csv(path, index=False)
+
+    truncated = pd.read_csv(path, nrows=150)[LABEL_COLUMN].nunique()
+    sampled = load_cicids(tmp_path, max_rows_per_file=150).frame[LABEL_COLUMN].nunique()
+    assert truncated == 1          # the bug this guards against
+    assert sampled > truncated     # random sampling keeps the classes

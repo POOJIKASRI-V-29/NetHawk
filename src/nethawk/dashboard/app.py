@@ -7,7 +7,9 @@ inference.
 """
 from __future__ import annotations
 
+import json
 import queue
+import threading
 import tkinter as tk
 from tkinter import ttk
 from typing import Any
@@ -16,6 +18,7 @@ import customtkinter as ctk
 
 from .. import config
 from ..capture.live import capture_available, platform_hint
+from ..detection.classifier import describe
 from ..engine import EngineMessage, NetHawkEngine
 from ..schema import MODE_DEMO, MODE_LIVE
 from . import theme
@@ -86,8 +89,16 @@ class NetHawkDashboard(ctk.CTk):
         self._build_footer()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(200, self._drain_queue)
-        self.after(1500, self._refresh_snapshot)
+        # Tk `after` loops must stop rescheduling once the window is closing,
+        # otherwise the callbacks fire against a destroyed interpreter.
+        self._closing = False
+        self._after_ids: list[str] = []
+        # Results handed back from worker threads.  Tk is not thread-safe, so
+        # workers never touch a widget: they queue a result and the Tk thread
+        # picks it up in _drain_queue().
+        self._ui_results: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._after_ids.append(self.after(200, self._drain_queue))
+        self._after_ids.append(self.after(1500, self._refresh_snapshot))
         self._load_history_from_db()
         if self.autostart:
             self.after(600, lambda: self._start_monitoring())
@@ -183,6 +194,14 @@ class NetHawkDashboard(ctk.CTk):
         ctk.CTkLabel(panel, text="Controlled local traffic only.\nNo packets are transmitted.",
                      text_color=theme.TEXT_DIM, justify="left",
                      font=(theme.FONT_FAMILY, 10)).pack(anchor="w", padx=16, pady=(0, 10))
+
+        self.btn_replay = ctk.CTkButton(panel, text="Replay Sample PCAP", height=34,
+                                        fg_color="#1e3a8a", hover_color="#1d4ed8",
+                                        command=self._replay_pcap)
+        self.btn_replay.pack(fill="x", padx=16, pady=(6, 2))
+        ctk.CTkLabel(panel, text="Real packet parsing from file.\nNo privileges required.",
+                     text_color=theme.TEXT_DIM, justify="left",
+                     font=(theme.FONT_FAMILY, 10)).pack(anchor="w", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(panel, text="MODE", text_color=theme.TEXT_DIM,
                      font=(theme.FONT_FAMILY, 11, "bold")).pack(anchor="w", padx=16, pady=(8, 4))
@@ -324,20 +343,46 @@ class NetHawkDashboard(ctk.CTk):
             self._start_monitoring()
         self.engine.run_simulation()
 
+    def _replay_pcap(self) -> None:
+        """Replay the bundled capture file through the real packet pipeline.
+
+        The engine generates the sample capture on first use, so this works on
+        a fresh clone with no preparation.
+        """
+        self.engine.replay_pcap()
+
     def _switch_mode(self, value: str) -> None:
         self.engine.switch_mode(value)
         self.mode_switch.set(self.engine.mode)
         self._refresh_snapshot()
 
     def _probe_capture(self) -> None:
+        """Probe capture on a worker thread - capture_available() blocks ~2s."""
         self._set_notice("Probing packet capture availability...", "info")
-        status = capture_available()
-        if status.available:
-            text = (f"Live capture available. Interfaces: {len(status.interfaces)}. "
-                    f"Monitor mode: {'yes' if status.monitor_mode else 'no'}.")
-            self._set_notice(text, "success")
-        else:
-            self._set_notice(f"{status.reason} | {platform_hint()}", "warning")
+        self.btn_probe.configure(state="disabled")
+
+        def worker() -> None:
+            try:
+                status = capture_available()
+                if status.available:
+                    text = (f"Live capture available. Interfaces: {len(status.interfaces)}. "
+                            f"Monitor mode: {'yes' if status.monitor_mode else 'no'}.")
+                    level = "success"
+                else:
+                    text = f"{status.reason} | {platform_hint()}"
+                    level = "warning"
+            except Exception as exc:
+                text, level = f"Capture probe failed: {exc}", "error"
+            # Queue it; the Tk thread applies it. No widget is touched here.
+            self._ui_results.put((text, level))
+
+        threading.Thread(target=worker, daemon=True, name="nethawk-probe").start()
+
+    def _probe_finished(self, text: str, level: str) -> None:
+        if self._closing:
+            return
+        self._set_notice(text, level)
+        self.btn_probe.configure(state="normal")
 
     def _clear_data(self) -> None:
         self.engine.clear_data()
@@ -359,6 +404,14 @@ class NetHawkDashboard(ctk.CTk):
 
     # ----------------------------------------------------------- updates ----
     def _drain_queue(self) -> None:
+        if self._closing:
+            return
+        try:
+            while True:
+                text, level = self._ui_results.get_nowait()
+                self._probe_finished(text, level)
+        except queue.Empty:
+            pass
         try:
             while True:
                 message: EngineMessage = self.engine.messages.get_nowait()
@@ -366,7 +419,8 @@ class NetHawkDashboard(ctk.CTk):
         except queue.Empty:
             pass
         finally:
-            self.after(200, self._drain_queue)
+            if not self._closing:
+                self._after_ids.append(self.after(200, self._drain_queue))
 
     def _handle_message(self, message: EngineMessage) -> None:
         if message.kind == "event":
@@ -483,6 +537,8 @@ KEY FEATURES
         self.notice_label.configure(text=text, text_color=theme.LEVEL_COLORS.get(level, theme.TEXT_DIM))
 
     def _refresh_snapshot(self) -> None:
+        if self._closing:
+            return
         snap = self.engine.snapshot()
         self.card_devices.update_value(snap["devices"], "seen on the monitored network")
         self.card_packets.update_value(f"{snap['packets']:,}", "analysed this session")
@@ -510,13 +566,24 @@ KEY FEATURES
                   f"db: database/nethawk.db"))
         self.btn_start.configure(state="disabled" if snap["monitoring"] else "normal")
         self.btn_stop.configure(state="normal" if snap["monitoring"] else "disabled")
-        self.after(1500, self._refresh_snapshot)
+        if not self._closing:
+            self._after_ids.append(self.after(1500, self._refresh_snapshot))
 
     def _load_history_from_db(self) -> None:
         """Repopulate the table from SQLite so history survives a restart."""
         for row in reversed(self.engine.db.recent_events(limit=120)):
             event = dict(row)
             event["alert"] = False
+            # events.features_json is stored by the engine; rehydrate it so the
+            # detail panel works for history reloaded after a restart.
+            try:
+                event["features"] = json.loads(event.get("features_json") or "{}")
+            except (TypeError, ValueError):
+                event["features"] = {}
+            event["response_action"] = (event.get("response") or "").split(" ")[0]
+            event["response_rationale"] = (
+                "Reloaded from the event history in SQLite.")
+            event["category_description"] = describe(event["attack_type"])
             item = self.tree.insert("", 0, values=(
                 event["timestamp"], event.get("source") or "-", event["attack_type"],
                 f"{event['confidence'] * 100:.0f}%", str(event["risk_score"]),
@@ -525,13 +592,34 @@ KEY FEATURES
             self.events[item] = event
 
     def _on_close(self) -> None:
+        """Stop the engine, cancel pending Tk callbacks, then tear down.
+
+        Idempotent: closing an already-closed window (double click on the close
+        button, or a test that closes explicitly before teardown) must not raise.
+        """
+        if self._closing:
+            return
+        self._closing = True
+        for after_id in self._after_ids:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._after_ids.clear()
         try:
             self.engine.stop_monitoring()
         finally:
-            self.destroy()
+            try:
+                self.destroy()
+            except Exception:
+                pass            # interpreter already torn down
 
 
 def launch(mode: str = MODE_DEMO, autostart: bool = True,
-           engine: NetHawkEngine | None = None) -> None:
+           engine: NetHawkEngine | None = None,
+           interface: str | None = None,
+           bpf_filter: str | None = None) -> None:
+    if engine is None:
+        engine = NetHawkEngine(mode=mode, interface=interface, bpf_filter=bpf_filter)
     app = NetHawkDashboard(engine=engine, start_mode=mode, autostart=autostart)
     app.mainloop()

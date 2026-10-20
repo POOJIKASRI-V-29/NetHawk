@@ -8,8 +8,10 @@ privileges, and transmits nothing on any network.
 ```bash
 cd nethawk
 python3 -m pip install -r requirements.txt
-python3 -m pytest          # expect: 85 passed
+python3 -m pytest          # expect: 110 passed
 python3 scripts/train_model.py
+python3 scripts/make_sample_pcap.py    # builds the sample capture for replay mode
+python3 scripts/check_capture.py       # confirms whether live mode will work
 ```
 
 Optional clean slate right before presenting:
@@ -84,6 +86,34 @@ Click a **DDoS** row. The **EVENT DETAIL** panel shows:
 > Say: "Nothing here is a black box — the risk number is a weighted sum of
 > three bounded terms, and we can read every one of them off the screen."
 
+### Step 4b — Show it on REAL packets (45 s)  ← strongest part of the demo
+
+Click **Replay Sample PCAP**.
+
+NetHawk now reads a real capture file with Scapy and runs the *same* packet
+path live mode uses — dissection, flow assembly, feature extraction — with no
+privileges required.
+
+Expected (measured): **981 packets parsed → 24 flows**, with
+`MODE: REPLAY` on the rows:
+
+| In the capture file | NetHawk says | Risk |
+|---|---|---|
+| 900-packet SYN flood to port 80 | **DDoS** | **74 HIGH** |
+| SYN scan across 18 ports | **Port Scan** ×21 | 58–60 MEDIUM |
+| 2 benign HTTPS conversations | Web Attack (*false positive*) | 63–67 MEDIUM |
+| 4 benign DNS exchanges | Port Scan (*false positive*) | 48 MEDIUM |
+
+> Say: "These are real packets, parsed by Scapy. The flood and the scan are
+> detected correctly. The two benign HTTPS flows are false positives, and we
+> report that honestly — it is the cost of training on synthetic flow
+> statistics rather than CICFlowMeter features from real captures. Fixing it
+> means training on the real dataset."
+
+Being upfront about the false positives is worth more marks than hiding them.
+If asked why the flood collapsed into one row, explain the micro-flow
+aggregation (viva Q24).
+
 ### Step 5 — Show the persistence (30 s)
 
 In a terminal:
@@ -97,26 +127,50 @@ sqlite3 database/nethawk.db "SELECT identifier, status, packets, threat_count FR
 Or click **Export Report** in the app and open the file it names in
 `reports/`.
 
-### Step 6 — Show the live-mode handling (30 s)
+### Step 6 — Show LIVE capture (45 s)
 
-Click **Check Live Capture**. On a machine without root the footer shows:
-
-```
-Permission denied: could not open /dev/bpf0 ... | macOS: LIVE mode needs sudo
-```
-
-> Say: "Live capture is implemented with Scapy, but raw capture needs root on
-> every OS. Instead of crashing, NetHawk detects this, explains it, and stays
-> in demo mode — which is exactly the graceful-degradation requirement."
-
-If you *can* run as root, demonstrate it:
+Click **Check Live Capture** first. On this Mac it reports that capture **is**
+available (Wireshark's ChmodBPF helper is installed), so demonstrate it:
 
 ```bash
-sudo $(which python3) app.py --mode live
+python3 app.py --mode live --iface en0
 ```
 
-Then open a browser or run `curl https://example.com` to create traffic, and
-watch real flows appear in the table with `MODE: LIVE`.
+Then create some traffic yourself — load a page in a browser, or run
+`curl https://example.com` — and watch real flows appear with `MODE: LIVE`.
+Benign browsing should come out as `Normal`, risk 0.
+
+A fully local version, if you would rather not touch the network at all:
+
+```bash
+# terminal 1
+python3 -m http.server 8077 --bind 127.0.0.1
+# terminal 2
+python3 app.py --headless --mode live --duration 20 --iface lo0 --filter "tcp port 8077"
+# terminal 3
+curl http://127.0.0.1:8077/ ; curl http://127.0.0.1:8077/
+```
+
+Measured result of exactly this: 84 packets captured, 6 flows analysed, all
+`NORMAL`, stored with `mode=LIVE`.
+
+**If `Check Live Capture` reports unavailable** (e.g. on a different machine, or
+after a reboot without the ChmodBPF helper), that is also a good demo moment:
+
+> Say: "Raw capture is privileged on every OS. Instead of crashing, NetHawk
+> detects it, explains why, and continues in demo mode — and replay mode still
+> proves the real packet path works without any privileges."
+
+Then run `sudo $(which python3) app.py --mode live` if you want live capture
+anyway.
+
+**Two things to know before demonstrating live mode:**
+
+* Pick the right interface — `route -n get default` shows which one carries
+  your traffic (`en0` here).
+* macOS often prefers **IPv6**. An IPv4-only filter such as
+  `--filter "host 104.20.23.154"` can capture zero packets while the page loads
+  fine over IPv6. Use the hostname, or no filter, if you are unsure.
 
 ---
 
@@ -133,9 +187,19 @@ python3 scripts/run_demo.py --fresh
 ## What to say if asked "is this real?"
 
 * The **pipeline** is real: real Random Forest, real feature extraction, real
-  SQLite, real Scapy capture code.
+  SQLite, real Scapy capture — and live capture is **verified working** on this
+  machine (84 packets on loopback, 66 on `en0`; see `docs/TESTING.md` §4c).
 * The **training data for the shipped model** is synthetic demo data, so the
-  accuracy figures are demo figures, not experimental results.
-* The **responses** are simulated — no network is modified.
-* **Live capture** works but needs root, and it analyses IP/TCP/UDP flows, not
-  802.11 frames.
+  accuracy figures are demo figures, **not** experimental results.
+* The **responses** are simulated — no network is ever modified.
+* Capture analyses **IP/TCP/UDP flows**, not 802.11 frames. No monitor mode, no
+  SSID/BSSID, so no rogue-AP or deauthentication detection.
+* The **false positives in replay mode are real** and we report them.
+
+## Honest one-liner if you only get one sentence
+
+> "NetHawk is a working end-to-end IDS pipeline — capture, features, Random
+> Forest, risk scoring, policy response, SQLite, dashboard — verified on
+> generated traffic, on replayed real packets and on live captured packets; the
+> shipped model is trained on our own synthetic dataset, so the accuracy
+> numbers are demo numbers, and the responses are simulated."

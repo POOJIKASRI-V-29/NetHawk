@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import config
-from .flows import Flow, FlowTable
+from .flows import Flow, FlowTable, aggregate_micro_flows
 
 
 @dataclass
@@ -90,10 +90,24 @@ class LiveCapture:
     def __init__(self, on_flow: Callable[[Flow], None],
                  interface: str | None = None,
                  flow_timeout: float | None = None,
-                 on_packet: Callable[[dict], None] | None = None) -> None:
+                 on_packet: Callable[[dict], None] | None = None,
+                 bpf_filter: str | None = None) -> None:
+        # Resolve the Scapy layer classes once.  _handle_packet runs for every
+        # captured packet, so importing there would put avoidable work on the
+        # hot path at thousands of packets per second.
+        scapy = _import_scapy()
+        self._IP = scapy["IP"]
+        self._IPv6 = scapy["IPv6"]
+        self._TCP = scapy["TCP"]
+        self._UDP = scapy["UDP"]
+        self._AsyncSniffer = scapy["AsyncSniffer"]
         self.on_flow = on_flow
         self.on_packet = on_packet
         self.interface = interface
+        # Optional BPF capture filter, e.g. "tcp port 443" or "host 10.0.0.5".
+        # Narrowing the filter is the right default when you only need to see
+        # specific traffic: unfiltered capture sees everything on the segment.
+        self.bpf_filter = bpf_filter
         self.flow_timeout = flow_timeout or config.LIVE_FLOW_TIMEOUT
         self.table = FlowTable(timeout=self.flow_timeout)
         self.packet_count = 0
@@ -105,8 +119,7 @@ class LiveCapture:
     # -------------------------------------------------------- packet path ---
     def _handle_packet(self, packet) -> None:
         try:
-            scapy = _import_scapy()
-            IP, IPv6, TCP, UDP = scapy["IP"], scapy["IPv6"], scapy["TCP"], scapy["UDP"]
+            IP, IPv6, TCP, UDP = self._IP, self._IPv6, self._TCP, self._UDP
             if packet.haslayer(IP):
                 ip = packet[IP]
                 src, dst = ip.src, ip.dst
@@ -144,7 +157,9 @@ class LiveCapture:
     def _flush_loop(self) -> None:
         while not self._stop.is_set():
             self._stop.wait(1.0)
-            for flow in self.table.collect_expired(force=self._stop.is_set()):
+            expired = aggregate_micro_flows(
+                self.table.collect_expired(force=self._stop.is_set()))
+            for flow in expired:
                 if flow.packet_count >= 1:
                     try:
                         self.on_flow(flow)
@@ -153,10 +168,12 @@ class LiveCapture:
 
     # ------------------------------------------------------------ control ---
     def start(self) -> bool:
-        scapy = _import_scapy()
         try:
-            self._sniffer = scapy["AsyncSniffer"](
-                prn=self._handle_packet, store=False, iface=self.interface)
+            kwargs = {"prn": self._handle_packet, "store": False,
+                      "iface": self.interface}
+            if self.bpf_filter:
+                kwargs["filter"] = self.bpf_filter
+            self._sniffer = self._AsyncSniffer(**kwargs)
             self._sniffer.start()
         except Exception as exc:
             self.last_error = str(exc)

@@ -8,9 +8,10 @@
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌─ CAPTURE + AI/ML LAYER ───────▼───────────────────────────────┐
-│  capture/live.py      AsyncSniffer -> packets                 │
-│  capture/flows.py     packets -> bidirectional flows          │
-│  capture/demo.py      controlled synthetic traffic (DEMO)     │
+│  capture/live.py      AsyncSniffer -> packets        (LIVE)   │
+│  capture/replay.py    sniff(offline=pcap) -> packets (REPLAY) │
+│  capture/flows.py     packets -> flows -> micro-flow merge    │
+│  capture/demo.py      controlled synthetic traffic   (DEMO)   │
 │  preprocessing/clean.py   column normalisation, Inf/NaN fix   │
 │  features/adapters.py     Dataset | Live | Demo -> 27 features│
 │  ml/predictor.py          Random Forest inference             │
@@ -81,6 +82,25 @@ DemoTrafficFeatureAdapter ─┼─> dict[FEATURE_NAMES] ─> vector_from_dict()
 LiveTrafficFeatureAdapter ─┘
 ```
 
+### Micro-flow aggregation
+
+A flood opens a new source port per packet, so 5-tuple accounting turns 900
+flood packets into 900 one-packet flows - destroying the packet rate that
+defines a flood, and costing 900 model calls and 900 database rows.
+`aggregate_micro_flows()` therefore merges storms of tiny flows (at least 5
+flows of at most 2 packets) that share
+`(source, destination, protocol, destination port)`.
+
+Grouping by destination **port** is what separates the two patterns:
+
+| Pattern | Micro-flows | Grouping result | Detected as |
+|---------|-------------|-----------------|-------------|
+| flood | hundreds, all to one port | merged into one high-rate flow | DoS / DDoS |
+| port scan | one or two per port, many ports | each group below threshold, untouched | Port Scan |
+
+Ordinary conversations exceed the packet threshold, so they are never merged.
+This runs in both the live flush loop and the replay reader.
+
 ### Live flow assembly
 
 `FlowTable` groups packets by a direction-independent key
@@ -101,6 +121,20 @@ between CIC-IDS2017, CSE-CIC-IDS2018 and AWID3.
 `detection/classifier.py` normalises them into eight stable categories, so the
 risk table, the response policy, the database and the UI never have to know
 which dataset trained the model.
+
+## 5b. Three traffic sources, one pipeline
+
+```
+DEMO    capture/demo.py      generated flows ----+
+REPLAY  capture/replay.py    sniff(offline=...) -+--> features -> model -> risk
+LIVE    capture/live.py      AsyncSniffer -------+        -> decision -> SQLite -> UI
+```
+
+REPLAY exists because LIVE needs privileges: it runs the *same* Scapy
+dissection, flow assembler and feature adapter, reading frames from a file
+instead of an interface, so the real packet path is demonstrable anywhere.
+The `mode` column in `events` records which source produced each row
+(`DEMO` / `REPLAY` / `LIVE`).
 
 ## 6. Mode selection and fallback
 
@@ -130,17 +164,21 @@ demonstration on a machine without root still starts and explains itself.
 | `NETHAWK_FLOW_TIMEOUT` | live flow idle timeout (default 5.0) |
 | `NETHAWK_ALERT_MIN_RISK` | minimum risk shown in Recent Alerts (default 40) |
 
+Runtime capture options (CLI): `--iface` selects the capture interface and
+`--filter` applies a BPF expression, which is how a live capture is narrowed to
+only the traffic being demonstrated.
+
 No absolute paths are hardcoded anywhere.
 
 ## 8. Roadmap mapping (proposal → implementation)
 
 | Proposal phase | Status in this MVP |
 |----------------|--------------------|
-| 1. Network monitoring | Implemented — Scapy capture with privilege detection and fallback |
+| 1. Network monitoring | Implemented and **verified** — Scapy capture with privilege detection and fallback; plus PCAP replay |
 | 2. Feature extraction | Implemented — 27-feature schema, three adapters |
 | 3. Dataset preparation | Implemented — CIC-IDS2017 loader + cleaning + bundled demo dataset |
 | 4. ML model | Implemented — Random Forest, trained, evaluated, persisted |
-| 5. Live prediction | Implemented — flows → features → prediction in LIVE mode (needs root) |
+| 5. Live prediction | Implemented and **verified** — real captured packets analysed on `lo0` and `en0` (docs/TESTING.md §4c) |
 | 6. Desktop application | Implemented — CustomTkinter console |
 | 7. Response + logging | Implemented — policy engine + SQLite (responses simulated) |
-| 8. Testing + packaging | Testing implemented (85 tests); PyInstaller packaging is future work |
+| 8. Testing + packaging | Testing implemented (110 tests, see docs/TESTING.md); PyInstaller packaging is **not** implemented |

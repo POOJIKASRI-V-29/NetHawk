@@ -16,6 +16,7 @@ models/metrics.json
 data/cicids2017/*
 !data/cicids2017/.gitkeep
 data/demo/*.csv
+data/demo/*.pcap        # regenerated on demand by the app
 
 .DS_Store
 .pytest_cache/
