@@ -51,8 +51,13 @@ class PcapReplay(LiveCapture):
         if not self.available():
             raise FileNotFoundError(f"Capture file not found or empty: {self.path}")
 
+        if self.path.is_dir():
+            raise IsADirectoryError(f"Capture path is a directory: {self.path}")
+
         # store=False keeps memory flat; prn is the same handler LIVE mode uses.
-        sniff(offline=str(self.path), prn=self._handle_packet, store=False)
+        # stop_filter lets stop() interrupt a long replay instead of waiting.
+        sniff(offline=str(self.path), prn=self._handle_packet, store=False,
+              stop_filter=lambda _pkt: self._stop.is_set())
 
         flows = aggregate_micro_flows(self.table.collect_expired(force=True))
         for flow in flows:
@@ -83,6 +88,7 @@ class PcapReplay(LiveCapture):
 
     def stop(self) -> None:                       # type: ignore[override]
         self._stop.set()
+        self.finished.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None

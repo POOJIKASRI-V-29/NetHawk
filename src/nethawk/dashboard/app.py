@@ -98,6 +98,9 @@ class NetHawkDashboard(ctk.CTk):
         # picks it up in _drain_queue().
         self._ui_results: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._after_ids.append(self.after(200, self._drain_queue))
+        # Paint the real values at once; without this the MODEL badge would
+        # read "LOADING" until the first periodic refresh a second later.
+        self._refresh_snapshot(reschedule=False)
         self._after_ids.append(self.after(1500, self._refresh_snapshot))
         self._load_history_from_db()
         if self.autostart:
@@ -259,9 +262,10 @@ class NetHawkDashboard(ctk.CTk):
         history.grid(row=1, column=0, sticky="nsew")
         history.grid_rowconfigure(1, weight=1)
         history.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(history, text="ATTACK HISTORY", text_color=theme.TEXT_DIM,
-                     font=(theme.FONT_FAMILY, 11, "bold")).grid(
-            row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+        self.history_title = ctk.CTkLabel(
+            history, text="ATTACK HISTORY", text_color=theme.TEXT_DIM,
+            font=(theme.FONT_FAMILY, 11, "bold"))
+        self.history_title.grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
 
         table_wrap = tk.Frame(history, bg=theme.PANEL)
         table_wrap.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -536,7 +540,7 @@ KEY FEATURES
     def _set_notice(self, text: str, level: str = "info") -> None:
         self.notice_label.configure(text=text, text_color=theme.LEVEL_COLORS.get(level, theme.TEXT_DIM))
 
-    def _refresh_snapshot(self) -> None:
+    def _refresh_snapshot(self, reschedule: bool = True) -> None:
         if self._closing:
             return
         snap = self.engine.snapshot()
@@ -564,9 +568,16 @@ KEY FEATURES
                   f"trained on:\n  {self.engine.predictor.data_source}\n"
                   f"events logged: {snap['events']}\n"
                   f"db: database/nethawk.db"))
+        shown = len(self.tree.get_children())
+        stored = snap["events"]
+        self.history_title.configure(
+            text=(f"ATTACK HISTORY   —   showing {shown} of {stored} stored events"
+                  if stored > shown else
+                  f"ATTACK HISTORY   —   {shown} event(s)" if shown else
+                  "ATTACK HISTORY"))
         self.btn_start.configure(state="disabled" if snap["monitoring"] else "normal")
         self.btn_stop.configure(state="normal" if snap["monitoring"] else "disabled")
-        if not self._closing:
+        if reschedule and not self._closing:
             self._after_ids.append(self.after(1500, self._refresh_snapshot))
 
     def _load_history_from_db(self) -> None:

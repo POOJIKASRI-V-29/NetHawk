@@ -70,11 +70,46 @@ def now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+class DatabaseUnavailableError(RuntimeError):
+    """Raised when the SQLite file cannot be opened or created."""
+
+
 class Database:
-    def __init__(self, path: Path | str | None = None) -> None:
+    def __init__(self, path: Path | str | None = None,
+                 recover_corrupt: bool = True) -> None:
         self.path = Path(path) if path else config.DB_PATH
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_schema()
+        self.recovered_from: Path | None = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise DatabaseUnavailableError(
+                f"Cannot create the database directory {self.path.parent}: {exc}. "
+                f"Set NETHAWK_DB_PATH to a writable location."
+            ) from exc
+        try:
+            self.init_schema()
+        except sqlite3.OperationalError as exc:
+            # Unopenable path: permissions, a missing volume, a read-only disk.
+            # Checked BEFORE DatabaseError because it is a subclass of it.
+            raise DatabaseUnavailableError(
+                f"Cannot open the database {self.path}: {exc}. "
+                f"Check permissions, or set NETHAWK_DB_PATH to a writable location."
+            ) from exc
+        except sqlite3.DatabaseError as exc:
+            # The file exists but is not a valid SQLite database (truncated,
+            # overwritten, or a different file type).  Move it aside and start
+            # a fresh one rather than refusing to launch.
+            if not (recover_corrupt and self.path.exists()):
+                raise DatabaseUnavailableError(
+                    f"Cannot open the database {self.path}: {exc}") from exc
+            backup = self.path.with_suffix(self.path.suffix + ".corrupt")
+            counter = 1
+            while backup.exists():
+                backup = self.path.with_suffix(f"{self.path.suffix}.corrupt{counter}")
+                counter += 1
+            self.path.replace(backup)
+            self.recovered_from = backup
+            self.init_schema()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

@@ -21,9 +21,9 @@ wording overstates it · **MISSING** = claimed but not implemented.
 | 3 | 06 Architecture, network layer | "Wi-Fi Network · 802.11 Traffic — **frames · MAC · SSID · BSSID**" | **MISSING.** NetHawk never reads SSID, BSSID or 802.11 MAC-layer fields. Devices are identified by **IP address**. | "Wi-Fi network · IP/TCP/UDP traffic — addresses · ports · flow statistics" |
 | 4 | 01 Introduction (graphic) | "AP rogue?" implies rogue-AP detection | **MISSING.** No rogue-AP, evil-twin or deauthentication detection. | Remove the rogue-AP cue, or label it "future work (needs AWID3 + monitor mode)" |
 | 5 | 07 Novelty | "**Real-time Wi-Fi monitoring**" | **PARTIAL.** Real-time monitoring of traffic *on* a Wi-Fi interface — not of 802.11 link-layer activity. | "Real-time monitoring of traffic on the Wi-Fi interface" |
-| 6 | 09 Technology stack | "**PyInstaller** — Packaging — bundles everything into one executable app" | **MISSING.** No PyInstaller spec, no packaging step. The app runs from source. | Move PyInstaller to the roadmap as not-yet-done, or delete the row |
+| 6 | 09 Technology stack | "**PyInstaller** — Packaging — bundles everything into one executable app" | **NOW IMPLEMENTED AND TESTED.** `packaging/nethawk.spec` builds a 132 MB one-directory bundle; the built executable was run (dashboard, `--replay`, `--headless`, `--paths`). It is **unsigned**, so macOS warns on another Mac. | Keep the row, and say "built and tested; unsigned (no Apple Developer account)" |
 | 7 | 09 Technology stack | "**CustomTkinter / PyQt** — Desktop GUI" | **PARTIAL.** CustomTkinter only (plus `ttk.Treeview` for the table). PyQt is unused. | "CustomTkinter (with ttk.Treeview for the history table)" |
-| 8 | 10 Roadmap, phase 8 | "Testing + **Packaging** — validate & package standalone app" | **PARTIAL.** Testing is done (110 tests). Packaging is not. | Mark phase 8 as "Testing complete; packaging pending" |
+| 8 | 10 Roadmap, phase 8 | "Testing + **Packaging** — validate & package standalone app" | **COMPLETE.** 156 automated tests pass and the PyInstaller bundle builds and runs. | Mark phase 8 complete, noting the bundle is unsigned |
 
 ## Claims the implementation supports
 
@@ -43,12 +43,22 @@ wording overstates it · **MISSING** = claimed but not implemented.
 1. **PCAP replay mode** — a third traffic source that runs real Scapy packet
    dissection from a capture file with no privileges. Worth a slide: it is how
    the real packet path is demonstrated on any laptop.
+1b. **Live capture is verified**, on loopback and on `en0` — the deck's slide 11
+   says "no real attacks detected yet", which can now be upgraded to "real
+   traffic analysed; attack detection demonstrated on replayed and generated
+   traffic".
 2. **Graceful mode degradation** — LIVE falls back to DEMO with the reason shown.
 3. **Micro-flow aggregation** — the design decision that makes SYN floods
-   detectable under 5-tuple accounting (see `docs/viva.md` Q24).
+   detectable under 5-tuple accounting (see `docs/VIVA.md` Q24).
 4. **Explainable risk arithmetic** — every event stores the full weighted sum.
 5. **Leakage-resistant dataset handling** — cross-file de-duplication and random
    sampling instead of head-truncation (both were real bugs, now fixed and tested).
+6. **Measured cross-domain limits** — the project reports its own false
+   positives on benign replayed traffic instead of hiding them. That is a
+   stronger academic position than an unexplained 0.998.
+7. **Defect hunt with regression tests** — 14 defects found by deliberate
+   hostile-input probing, each fixed and pinned by a test
+   (`docs/TESTING.md` §6).
 
 ## Things to say carefully in the viva
 

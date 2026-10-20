@@ -22,6 +22,7 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -38,7 +39,17 @@ from ..datasets.loader import SOURCE_DEMO, LoadedDataset
 from ..detection.classifier import normalize_label, to_binary
 from ..schema import BINARY_ATTACK, FEATURE_NAMES, LABEL_COLUMN
 
-MODEL_FORMAT_VERSION = 2
+MODEL_FORMAT_VERSION = 3
+
+
+def _fingerprint(frame: pd.DataFrame) -> str:
+    """Stable hash of the training data, so a run can be tied to its dataset."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(",".join(map(str, frame.columns)).encode())
+    digest.update(pd.util.hash_pandas_object(frame, index=False).values.tobytes())
+    return digest.hexdigest()[:32]
 
 
 @dataclass
@@ -62,6 +73,8 @@ def build_model(seed: int = 42) -> RandomForestClassifier:
 def train(dataset: LoadedDataset, test_size: float = 0.25,
           seed: int = 42) -> TrainingResult:
     frame = dataset.frame
+    if frame.empty:
+        raise ValueError("Cannot train on an empty dataset.")
     X = frame[FEATURE_NAMES].astype(float)
     y_raw = frame[LABEL_COLUMN]
     y = y_raw.map(normalize_label)
@@ -73,6 +86,18 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
     mask = y.isin(keep)
     X, y = X[mask], y[mask]
 
+    if X.empty:
+        raise ValueError(
+            "No class has at least 10 samples, so there is nothing to train on. "
+            "Check the Label column and the dataset size.")
+
+    single_class_warning = None
+    if y.nunique() < 2:
+        single_class_warning = (
+            f"The dataset contains only one class ({y.iloc[0]!r}). The model "
+            f"cannot learn to discriminate and every prediction will be that "
+            f"class. Reported metrics are meaningless.")
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=seed, stratify=y)
 
@@ -80,6 +105,7 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
 
+    confusion_labels = sorted(set(y_test) | set(y_pred))
     bin_true = np.array([to_binary(v) for v in y_test])
     bin_pred = np.array([to_binary(v) for v in y_pred])
 
@@ -92,6 +118,27 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
         "is_demo_data": dataset.source == SOURCE_DEMO,
         "files": dataset.files,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
+        # --- reproducibility record: everything needed to repeat this run ---
+        "reproducibility": {
+            "random_seed": int(seed),
+            "test_size": float(test_size),
+            "split": "sklearn train_test_split, stratified on the normalised label",
+            "duplicates_removed": int(getattr(dataset, "duplicates_removed", 0)),
+            "dataset_fingerprint_sha256": _fingerprint(frame),
+            "model_params": {k: v for k, v in model.get_params().items()
+                             if k in ("n_estimators", "max_depth", "min_samples_leaf",
+                                      "class_weight", "random_state", "n_jobs")},
+            "feature_count": len(FEATURE_NAMES),
+            "command": (f"python3 scripts/train_model.py"
+                        f"{' --demo' if dataset.source == SOURCE_DEMO else ''} "
+                        f"--seed {seed} --test-size {test_size}"),
+            "library_versions": {
+                "python": platform.python_version(),
+                "scikit-learn": sklearn.__version__,
+                "pandas": pd.__version__,
+                "numpy": np.__version__,
+            },
+        },
         "rows_total": int(len(frame)),
         "rows_train": int(len(X_train)),
         "rows_test": int(len(X_test)),
@@ -101,8 +148,11 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
             "accuracy": float(accuracy_score(y_test, y_pred)),
             "macro_f1": float(f1_score(y_test, y_pred, average="macro", zero_division=0)),
             "report": classification_report(y_test, y_pred, zero_division=0, output_dict=True),
-            "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
-            "confusion_labels": sorted(set(y_test) | set(y_pred)),
+            # labels= is passed explicitly so the matrix keeps its shape even
+            # when a class is absent from one of the two vectors.
+            "confusion_matrix": confusion_matrix(
+                y_test, y_pred, labels=confusion_labels).tolist(),
+            "confusion_labels": confusion_labels,
         },
         "binary": {
             "accuracy": float(accuracy_score(bin_true, bin_pred)),
@@ -114,6 +164,7 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
                 bin_true, bin_pred, pos_label=BINARY_ATTACK, zero_division=0)),
         },
         "top_features": [{"feature": f, "importance": float(i)} for f, i in importances[:12]],
+        "single_class_warning": single_class_warning,
         "caveat": (
             "Metrics measured on synthetic DEMO data - they describe the demo "
             "generator, not real-world intrusion detection performance."
@@ -128,6 +179,9 @@ def train(dataset: LoadedDataset, test_size: float = 0.25,
         "is_demo_data": dataset.source == SOURCE_DEMO,
         "trained_at": metrics["trained_at"],
         "sklearn_python": platform.python_version(),
+        "sklearn_version": sklearn.__version__,
+        "random_seed": int(seed),
+        "dataset_fingerprint_sha256": metrics["reproducibility"]["dataset_fingerprint_sha256"],
         "rows_total": metrics["rows_total"],
         "accuracy": metrics["multiclass"]["accuracy"],
     }

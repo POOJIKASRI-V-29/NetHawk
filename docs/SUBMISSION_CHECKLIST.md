@@ -11,15 +11,18 @@ Status as of **20 October 2026**. Tick the manual items before you submit.
 | Source code, modular by layer | ✅ | `src/nethawk/` (14 modules) |
 | Single-command entry point | ✅ | `app.py` |
 | Scripts: train, evaluate, prepare data, build sample capture, capture diagnostic, terminal demo | ✅ | `scripts/` (6 scripts) |
-| Automated tests | ✅ | `tests/` — **110 passing** |
+| Packaging configuration | ✅ | `packaging/nethawk.spec` — built and the artifact tested |
+| Requirements traceability | ✅ | `docs/REQUIREMENTS_TRACEABILITY.md` (50 requirements) |
+| Final verification record | ✅ | `docs/FINAL_VERIFICATION.md` |
+| Automated tests | ✅ | `tests/` — **156 passing** (11 files) |
 | Dependency manifest | ✅ | `requirements.txt` |
 | Test configuration | ✅ | `pytest.ini` |
 | Version control | ✅ | git repository with commit history |
 | `.gitignore` excludes datasets, DB, models, logs, reports | ✅ | `.gitignore` |
 | README: overview, architecture, install, run, modes, dataset, ML, features, risk, response, schema, testing, limitations, future work, troubleshooting | ✅ | `README.md` (18 sections) |
-| Architecture documentation | ✅ | `docs/architecture.md` |
-| Demo script | ✅ | `docs/demo.md` |
-| Viva preparation | ✅ | `docs/viva.md` (27 Q&As) |
+| Architecture documentation | ✅ | `docs/ARCHITECTURE.md` |
+| Demo script | ✅ | `docs/DEMO.md` |
+| Viva preparation | ✅ | `docs/VIVA.md` (27 Q&As) |
 | Verification report | ✅ | `docs/TESTING.md` |
 | Proposal-vs-code audit | ✅ | `docs/PROPOSAL_ALIGNMENT.md` |
 | Dataset setup instructions | ✅ | `data/README.md` |
@@ -42,15 +45,16 @@ Status as of **20 October 2026**. Tick the manual items before you submit.
 | Real-time updates without freezing the GUI | ✅ queue + worker threads |
 | Reports | ✅ `Export Report` / `utils/report.py` |
 | Graceful degradation when capture is unavailable | ✅ tested |
-| 802.11 / monitor-mode frame analysis | ❌ not implemented (deliberate) |
-| PyInstaller packaging | ❌ not implemented |
+| 802.11 / monitor-mode frame analysis | ❌ not implemented (deliberate; scope in REQUIREMENTS_TRACEABILITY) |
+| PyInstaller packaging | ✅ built and tested (unsigned) |
 | Training on real CIC-IDS2017 | ⛔ blocked — dataset not downloaded |
 
 ## 3. Things you must do manually
 
 - [ ] **Correct the presentation deck** using `docs/PROPOSAL_ALIGNMENT.md`.
-      The two that matter: slide 5/6 say "802.11 frames" (we analyse IP/TCP/UDP
-      flows) and slide 9 lists PyInstaller (not implemented).
+      The ones that matter now: slides 5/6 say "802.11 frames" (we analyse
+      IP/TCP/UDP flows) and slide 6 lists MAC/SSID/BSSID (devices are keyed by
+      IP). PyInstaller on slide 9 is now accurate — add "unsigned".
 - [ ] **Decide on real-data training.** To report genuine metrics, download
       CIC-IDS2017 (~220 MB, needs accepting UNB's terms), place the CSVs in
       `data/cicids2017/`, then run:
@@ -63,7 +67,7 @@ Status as of **20 October 2026**. Tick the manual items before you submit.
 - [ ] **Re-run `python3 scripts/check_capture.py`** on the demo machine on the
       day (BPF permissions can change after a reboot).
 - [ ] **Replace the mock dashboard screenshot** on deck slide 11 with a real one.
-- [ ] **Rehearse the demo once** end to end from `docs/demo.md` (≈5 minutes).
+- [ ] **Rehearse the demo once** end to end from `docs/DEMO.md` (≈5 minutes).
 - [ ] **Clear the database** right before presenting: click **Clear Demo Data**
       or run `python3 scripts/run_demo.py --fresh`.
 
@@ -71,7 +75,7 @@ Status as of **20 October 2026**. Tick the manual items before you submit.
 
 ```bash
 cd nethawk
-python3 -m pytest                       # expect 110 passed
+python3 -m pytest                       # expect 156 passed
 python3 scripts/check_capture.py        # know whether live mode will work today
 python3 scripts/make_sample_pcap.py     # ensure the sample capture exists
 python3 app.py --replay                 # expect 981 packets, 24 flows, one DDoS
@@ -87,7 +91,7 @@ python3 app.py                          # dashboard: Start → Run Security Simu
 * An explainable risk score whose arithmetic is shown for every event.
 * A leakage-resistant dataset pipeline, with two real bugs found and fixed
   during the audit, each covered by a regression test.
-* 110 automated tests covering every layer.
+* 156 automated tests covering every layer, including 28 hostile-input tests.
 
 ## 6. Claims you may NOT make
 
@@ -97,4 +101,5 @@ python3 app.py                          # dashboard: Start → Run Security Simu
 * ❌ "We capture and analyse 802.11 frames" — IP/TCP/UDP only, no monitor mode.
 * ❌ "The system blocks attackers" — the response is simulated.
 * ❌ "We tested it by attacking a network" — traffic was generated locally.
-* ❌ "It is packaged as a standalone executable" — not yet.
+* ⚠️  "It is packaged as a standalone executable" — true, but say **unsigned**:
+  macOS warns on a machine that did not build it.

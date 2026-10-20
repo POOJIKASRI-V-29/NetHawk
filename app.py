@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import sys
 from pathlib import Path
 
@@ -44,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="live mode: interface to capture on (default: Scapy's default)")
     parser.add_argument("--filter", dest="bpf_filter", default=None,
                         help="live mode: BPF capture filter, e.g. \"tcp port 443\"")
+    parser.add_argument("--paths", action="store_true",
+                        help="print the resolved file locations and exit")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -116,6 +119,11 @@ def run_headless(mode: str, duration: float, simulate: bool,
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     config.ensure_directories()
+
+    if args.paths:
+        print(f"{config.APP_NAME} {config.VERSION}")
+        print(config.describe_paths())
+        return 0
     mode = MODE_LIVE if args.mode == MODE_LIVE.lower() else MODE_DEMO
 
     if args.replay:
@@ -138,4 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Must come first in a frozen (PyInstaller) build.  joblib/loky spawn
+    # helper processes, and without this each child re-executes this script
+    # with multiprocessing's own argv - which argparse then rejects with
+    # "unrecognized arguments: -B -S -I -c from multiprocessing...".
+    multiprocessing.freeze_support()
     raise SystemExit(main())

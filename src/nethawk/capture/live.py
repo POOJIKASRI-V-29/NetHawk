@@ -52,6 +52,35 @@ def default_interface() -> str | None:
         return None
 
 
+def validate_bpf_filter(expression: str, interface: str | None = None) -> str | None:
+    """Compile a BPF filter to check it. Returns an error message, or None.
+
+    Without this check an invalid filter is accepted by AsyncSniffer, the
+    sniffer then captures nothing, and NetHawk would report "LIVE capture
+    started" while silently seeing zero packets.
+
+    compile_filter needs a link type to compile against, so an Ethernet
+    linktype (DLT_EN10MB = 1) is used when no interface is given - that is
+    enough to catch a syntax error in the expression.
+    """
+    if not expression:
+        return None
+    try:
+        from scapy.arch.common import compile_filter
+    except ImportError:
+        return None                      # cannot validate on this platform
+    for kwargs in ({"iface": interface} if interface else {}, {"linktype": 1}):
+        try:
+            compile_filter(expression, **kwargs)
+            return None
+        except ImportError:
+            return None
+        except Exception as exc:
+            message = str(exc).strip()
+            last_error = message.splitlines()[0] if message else "invalid filter"
+    return last_error
+
+
 def monitor_mode_available() -> bool:
     """True only if Scapy reports an interface already in monitor mode."""
     try:
@@ -168,6 +197,11 @@ class LiveCapture:
 
     # ------------------------------------------------------------ control ---
     def start(self) -> bool:
+        filter_error = validate_bpf_filter(self.bpf_filter or "", self.interface)
+        if filter_error:
+            self.last_error = (f"Invalid capture filter {self.bpf_filter!r}: "
+                               f"{filter_error}")
+            return False
         try:
             kwargs = {"prn": self._handle_packet, "store": False,
                       "iface": self.interface}
@@ -175,6 +209,16 @@ class LiveCapture:
                 kwargs["filter"] = self.bpf_filter
             self._sniffer = self._AsyncSniffer(**kwargs)
             self._sniffer.start()
+            # AsyncSniffer.start() returns immediately; give the thread a
+            # moment and confirm it survived, so a failure to attach to the
+            # interface is reported instead of looking like a quiet capture.
+            time.sleep(0.3)
+            if not getattr(self._sniffer, "running", False):
+                self.last_error = (f"Sniffer stopped immediately on "
+                                   f"{self.interface or 'the default interface'} "
+                                   f"- check the interface name and permissions.")
+                self._sniffer = None
+                return False
         except Exception as exc:
             self.last_error = str(exc)
             return False

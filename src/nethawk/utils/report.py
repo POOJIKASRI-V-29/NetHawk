@@ -58,7 +58,7 @@ def build_report(db, predictor=None) -> str:
 
 
 def write_report(db, predictor=None, path: Path | None = None) -> Path:
-    reports_dir = config.PROJECT_ROOT / "reports"
+    reports_dir = config.REPORTS_DIR
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = path or reports_dir / f"nethawk_report_{datetime.now():%Y%m%d_%H%M%S}.txt"
     path.write_text(build_report(db, predictor))

@@ -120,3 +120,33 @@ def test_capture_probe_never_touches_tk_from_a_worker_thread(app):
         pump(app, 0.2)
     assert app.btn_probe.cget("state") == "normal"
     assert "Probing" not in app.notice_label.cget("text")
+
+
+def test_model_badge_is_correct_on_the_first_frame(app):
+    """The provenance badge must never show a placeholder to the user."""
+    pump(app, 0.2)
+    assert app.model_pill.cget("text") in ("DEMO DATA", "CIC-IDS2017")
+
+
+def test_history_header_reports_truncation(app):
+    """A capped table must say how much of the stored history it is showing."""
+    for _ in range(410):
+        app.engine.process_record(app.engine.demo_generator.random_attack_record())
+    pump(app, 1.5)
+    app._refresh_snapshot(reschedule=False)
+    pump(app, 0.2)
+    header = app.history_title.cget("text")
+    assert "showing 400 of" in header
+    assert len(app.tree.get_children()) == 400
+    assert app.engine.snapshot()["events"] >= 410      # nothing lost in SQLite
+
+
+def test_replay_and_demo_events_are_distinguishable_in_the_table(app, tmp_path):
+    from nethawk.capture.sample import write_sample_pcap
+
+    app.engine.run_simulation(step_delay=0, blocking=True)
+    pcap, _ = write_sample_pcap(tmp_path / "s.pcap")
+    app.engine.replay_pcap(pcap, blocking=True)
+    pump(app, 1.0)
+    modes = {app.tree.item(i, "values")[7] for i in app.tree.get_children()}
+    assert {"DEMO", "REPLAY"} <= modes

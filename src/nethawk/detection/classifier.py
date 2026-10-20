@@ -42,6 +42,8 @@ def normalize_label(raw_label: object) -> str:
     """Map any raw dataset/model label onto a canonical NetHawk category."""
     if raw_label is None:
         return CATEGORY_OTHER
+    if isinstance(raw_label, (bytes, bytearray)):
+        raw_label = raw_label.decode("latin-1", errors="replace")
     text = str(raw_label).strip()
     if not text:
         return CATEGORY_OTHER

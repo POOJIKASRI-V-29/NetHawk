@@ -237,7 +237,8 @@ Both come from `python3 scripts/evaluate_model.py --cv 5 --audit-port`.
 7. Supervised only: a genuinely novel attack may be missed or land in
    "Other Suspicious".
 8. Single host, single user; no distributed sensors or alert forwarding.
-9. No PyInstaller packaging yet — the deck lists it, the code does not have it.
+9. The PyInstaller bundle builds and runs, but it is **unsigned**, so macOS
+   warns when it is copied to another Mac.
 
 ### 19. What is a flow, and why analyse flows instead of packets?
 
@@ -344,3 +345,225 @@ monitor-mode capture path, which is what would let NetHawk genuinely detect
 Wi-Fi link-layer attacks such as deauthentication and evil twin — the thing the
 project title promises and the current MVP does not do. The adapter seam for
 that already exists; nothing else in the pipeline would need to change.
+
+---
+
+# Part 2 — added coverage
+
+### 28. State the problem and your objectives in two sentences.
+
+Wireless networks carry traffic that is exposed to abnormal and malicious
+activity, and the usual tools split detection, risk assessment and response
+across separate, mostly signature-based products that need infrastructure to
+run. NetHawk's objective is a single lightweight local application that
+continuously analyses network behaviour, classifies suspicious traffic with a
+machine-learning model, scores its risk transparently, applies a controlled
+response policy, and stores every event locally for review.
+
+### 29. How does NetHawk compare with Snort, Zeek, Suricata and Kismet?
+
+| Tool | Approach | Strength | Gap NetHawk addresses |
+|------|----------|----------|------------------------|
+| **Snort** | Signature NIDS/IPS | Mature rule engine, real-time alerting | Rule-bound; unfamiliar behaviour needs a new rule |
+| **Zeek** | Traffic-analysis framework + scripting | Deep protocol logs, programmable policy | No built-in ML risk model; analyst-heavy |
+| **Suricata** | Multi-threaded signature IDS/IPS/NSM | High throughput | Still signature-first |
+| **Kismet** | Passive 802.11 sniffer / WIDS | True wireless L2 capture, rogue-AP detection | Detection-centric; no ML risk scoring or response policy |
+| **AWID/AWID3** | Public 802.11 datasets + research | Enables ML for Wi-Fi attacks | Datasets and studies, not a deployable app |
+
+**Be careful here:** Kismet does the 802.11 link-layer work that NetHawk does
+*not* do. The honest comparison is that NetHawk unifies ML detection, risk
+scoring, policy response, logging and a dashboard in one local app — at the
+network layer — and that Kismet remains the better tool for wireless
+frame-level monitoring.
+
+### 30. What does NetHawk actually contribute beyond gluing libraries together?
+
+Four things, all inspectable in the code, and none of them a claim of novelty
+in the research sense:
+
+1. **One feature contract across three traffic sources.** `schema.py` defines
+   27 features; `DatasetFeatureAdapter`, `DemoTrafficFeatureAdapter` and
+   `LiveTrafficFeatureAdapter` all produce exactly that, and a load-time check
+   refuses a model trained on a different schema. This is what lets the same
+   model serve a CSV, a `.pcap` and a live interface.
+2. **A transparent risk function with the arithmetic kept.** Every event stores
+   `severity × 0.50 + confidence × 0.30 + intensity × 0.20` with each term's
+   value, so the number can be defended rather than trusted.
+3. **Micro-flow aggregation keyed on destination port**, which makes a SYN
+   flood visible under 5-tuple accounting without collapsing a port scan into
+   the same shape (Q24).
+4. **A measured honesty layer** — model provenance is recorded in the artifact
+   and shown in the UI, synthetic results are labelled as such, and the
+   project's own false positives on real traffic are published.
+
+Patentability is not claimed. The contribution is integration and
+explainability, not a new algorithm.
+
+### 31. Why SQLite with a connection per operation, and is that thread-safe?
+
+A SQLite connection object should not be shared across threads, and the default
+`check_same_thread=True` enforces that. Rather than pass connections around or
+keep a lock, NetHawk opens a short-lived connection for each operation through
+a context manager. SQLite itself serialises writers at the file level, and the
+10-second busy timeout absorbs contention.
+
+**Verified, not assumed:** six threads each performing 40 inserts and 40 device
+upserts produced 240/240 rows and 240/240 accumulated packets with zero errors
+(`test_concurrent_writers_do_not_lose_rows`).
+
+*Alternatives considered:* one connection plus a mutex (faster, but one slow
+query blocks every thread and a leaked lock deadlocks the UI); WAL mode with a
+connection pool (the right answer at high write rates, unnecessary at a few
+events per second). The trade-off is a small per-operation open cost in
+exchange for simplicity we can prove correct.
+
+### 32. Why is the decision engine separate from the risk scorer?
+
+Because they answer different questions and change for different reasons. The
+scorer answers "how bad is this?" and is pure arithmetic over the detection.
+The engine answers "what should happen?" and encodes policy — which an
+administrator might want to change without touching the score. Keeping them
+apart means the policy can be re-tuned, or a real enforcement backend added,
+without altering a single number in the risk history.
+
+### 33. What did you do about privacy and safe operation?
+
+* **No enforcement.** `DecisionEngine.enforcement_enabled` is `False` and no
+  code path sets it. There is no firewall call, no deauthentication, no packet
+  injection. Every response row is stored with `simulated = 1`.
+* **No attacking anything.** The "attack" traffic is generated locally as
+  feature vectors, or crafted into a `.pcap` and written to disk. No socket is
+  opened; nothing is transmitted.
+* **Narrow capture by default in testing.** Live-capture verification used a
+  BPF filter pinned to a single host that the test itself contacted, and
+  loopback-only traffic for the fully local run, so no third-party traffic was
+  captured.
+* **Local processing.** Traffic metadata never leaves the machine; there is no
+  network call, no telemetry and no cloud component.
+* **No monitor mode.** Capturing 802.11 management frames would collect data
+  about nearby networks that are not ours, so the MVP deliberately does not.
+* **Data retention is visible and resettable.** Everything is in one SQLite
+  file, and *Clear Demo Data* empties it.
+
+### 34. What evidence do you have that this works, and can I reproduce it?
+
+| Evidence | Command |
+|---|---|
+| 156 automated tests, including 28 hostile-input tests | `python3 -m pytest` |
+| The full pipeline on generated traffic | `python3 scripts/run_demo.py --fresh` |
+| The real packet path on real frames | `python3 app.py --replay` |
+| Live capture on this machine | `python3 scripts/check_capture.py`, then `python3 app.py --mode live --iface en0` |
+| Model metrics, CV and a feature audit | `python3 scripts/evaluate_model.py --cv 5 --audit-port` |
+| Where everything is read and written | `python3 app.py --paths` |
+
+`docs/TESTING.md` records the actual output of each, and
+`docs/REQUIREMENTS_TRACEABILITY.md` maps all 50 requirements to a status and an
+evidence reference. Training is reproducible: `models/metrics.json` stores the
+seed, the split method, the model parameters, a dataset fingerprint, the
+library versions and the exact command.
+
+### 35. Your accuracy is 99.8%. Should I believe it?
+
+No, and that is the point. The model is trained on a synthetic dataset
+generated by `src/nethawk/datasets/synthetic.py`, and the demo traffic comes
+from the same generator, so the classes are far more separable than real
+traffic. 0.9978 measures the generator, not intrusion detection.
+
+The honest evidence is what happens on traffic the generator did not produce.
+On replayed real packets the flood and the scan were detected correctly, but
+two benign HTTPS conversations were called Web Attack and four benign DNS
+exchanges were called Port Scan, and confidence on real traffic drops to about
+0.5 from about 1.0. Those false positives are in `docs/TESTING.md` §8 because
+removing them by tuning a threshold would have been dishonest; the real fix is
+training on CIC-IDS2017.
+
+### 36. Why do the false positives happen, specifically?
+
+Three reasons, in order of size:
+
+1. **Train/serve feature mismatch.** The model learned statistics produced by
+   our generator. Live and replayed features are computed by our own flow
+   assembler from real packets. The definitions match; the distributions do not.
+2. **Short flows are ambiguous.** A 2-packet DNS exchange and a 2-packet scan
+   probe look almost identical in 27 flow statistics — both are tiny, fast and
+   one-sided. Without payload inspection there is little left to separate them.
+3. **No benign diversity in training.** The synthetic benign class is far
+   narrower than real benign traffic (TLS handshakes, keep-alives, retransmits),
+   so anything unusual-but-benign falls outside it.
+
+The mitigation that is already in place is the risk formula: because confidence
+is 30% of the score, an uncertain detection cannot reach HIGH on its own — the
+false positives land at MEDIUM, which the policy treats as "warn", not "block".
+
+### 37. Why Random Forest rather than a neural network or SVM?
+
+| Option | Why not chosen |
+|--------|----------------|
+| **Logistic regression** | Linear decision boundary; flow features interact non-linearly (rate × flag mix) |
+| **SVM (RBF)** | Needs feature scaling, scales poorly past ~10⁵ rows, no usable feature importances |
+| **Gradient boosting (XGBoost/LightGBM)** | Usually matches or beats RF on tabular data, but adds a dependency, more hyperparameters to defend, and no benefit at this scale |
+| **Neural network** | Needs far more data, gives no interpretability, and the feature set is tabular — exactly where trees win |
+| **Unsupervised (Isolation Forest / autoencoder)** | Would cover unknown attacks, but cannot name an attack type, which the risk severity table needs. Worth adding *alongside* the classifier — listed as future work |
+
+Random Forest gives non-linear decision boundaries, needs no scaling, tolerates
+outliers across orders of magnitude, exposes feature importances for the viva,
+trains in about a second, and predicts in ~10 ms — fast enough for live flows.
+
+### 38. Why 27 features, and how did you choose them?
+
+The selection rule was **computability from every source**: each feature must
+be derivable both from a CIC-IDS2017 CSV row and from packets we can capture
+ourselves. CIC-IDS2017 ships about 80 features, but many (subflow and bulk-rate
+statistics, active/idle timers) are CICFlowMeter-specific and we could not
+reproduce them faithfully from our own assembler — including them would have
+meant inventing values. The 27 that survive cover volume, timing, rate, packet
+size distribution, TCP flag behaviour and directionality, which is what
+separates the attack classes in practice: the top four importances are
+`PSH Flag Count`, `Total Fwd Packets`, `ACK Flag Count` and `Flow Packets/s`.
+
+### 39. What happens if you point this at a busy network?
+
+Honestly: it would struggle, and here is where. Capture is a single Scapy
+`AsyncSniffer` with a Python callback per packet, so packet-rate is the first
+ceiling — at high rates the kernel buffer drops frames before we see them.
+Inference is about 10 ms per flow on one core, so the flow rate is the second
+ceiling (roughly a hundred flows per second). The flow table is capped at 4 096
+concurrent flows and evicts the oldest. SQLite takes one write per event, which
+is fine at demo rates and would need batching at scale.
+
+That is acceptable for a single-host course project, and the honest answer to
+"would you deploy this on a campus network" is no — you would move capture into
+C (libpcap directly, or Suricata's own flow output), batch inference, and write
+events in bulk.
+
+### 40. For the three biggest design choices, what were the alternatives?
+
+| Choice | Alternative | Why we chose ours | Trade-off accepted |
+|---|---|---|---|
+| Flow-level features | Per-packet features | A single packet carries almost no attack signal; attacks are aggregate behaviour, and CIC-IDS2017 is flow-level | Up to one flow-timeout (5 s) of detection latency |
+| One multiclass model, binary derived from it | Two models (binary + multiclass) | The two answers can never contradict each other | Cannot tune attack-vs-benign sensitivity independently of class separation |
+| Simulated response only | Real `pf`/`iptables` enforcement | A student project must not be able to cut off a real network; mistakes are unrecoverable | Cannot claim to be an IPS |
+
+### 41. If the GUI fails during your demonstration, what do you do?
+
+Run the terminal path, which exercises the identical pipeline:
+
+```bash
+python3 scripts/run_demo.py --fresh      # full pipeline + printed report
+python3 app.py --replay                  # real packets through the real parser
+```
+
+Both print every stage — prediction, attack type, confidence, risk, level,
+response — and the report summarises the stored events. `docs/DEMO.md` has this
+as the documented fallback.
+
+### 42. What is the single biggest weakness of this project?
+
+That the title says Wi-Fi and the implementation works at the network layer.
+NetHawk captures from a Wi-Fi interface, but it analyses IP/TCP/UDP flows, not
+802.11 frames, so it cannot detect deauthentication, evil-twin or rogue-AP
+attacks. Closing that needs a monitor-mode adapter, 802.11 frame parsing with
+`scapy.layers.dot11`, and the AWID3 dataset.
+`docs/REQUIREMENTS_TRACEABILITY.md` scopes the work. The second weakness is
+that the shipped model is demo-trained, which the dashboard badge and every
+document state.

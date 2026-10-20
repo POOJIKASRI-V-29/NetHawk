@@ -67,7 +67,7 @@ ATTACK_CATEGORIES: list[str] = [
 ]
 
 # Severity weight per category (0-100).  Used by the risk scorer; documented in
-# docs/viva.md so the number can be explained, not hand-waved.
+# docs/VIVA.md so the number can be explained, not hand-waved.
 CATEGORY_SEVERITY: dict[str, int] = {
     CATEGORY_NORMAL: 0,
     CATEGORY_OTHER: 45,

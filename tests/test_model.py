@@ -44,3 +44,48 @@ def test_missing_model_raises_when_autotrain_disabled(tmp_path):
         assert "train_model.py" in str(exc)
     else:
         raise AssertionError("expected ModelNotTrainedError")
+
+
+# ------------------------------------------------ reproducibility record ---
+def test_training_is_reproducible_for_a_fixed_seed():
+    dataset = load_demo(rows_per_class=100, seed=3)
+    first = ml_model.train(dataset, seed=42)
+    second = ml_model.train(dataset, seed=42)
+    assert (first.metrics["multiclass"]["accuracy"]
+            == second.metrics["multiclass"]["accuracy"])
+    assert (first.metrics["multiclass"]["confusion_matrix"]
+            == second.metrics["multiclass"]["confusion_matrix"])
+
+
+def test_metrics_record_everything_needed_to_repeat_the_run():
+    result = ml_model.train(load_demo(rows_per_class=60, seed=3), seed=11)
+    rep = result.metrics["reproducibility"]
+    assert rep["random_seed"] == 11
+    assert rep["test_size"] == 0.25
+    assert "stratified" in rep["split"]
+    assert len(rep["dataset_fingerprint_sha256"]) == 32
+    assert "scripts/train_model.py" in rep["command"]
+    assert rep["feature_count"] == len(FEATURE_NAMES)
+    for key in ("python", "scikit-learn", "pandas", "numpy"):
+        assert rep["library_versions"][key]
+    assert rep["model_params"]["n_estimators"] == 200
+    assert result.metadata["random_seed"] == 11
+    assert result.metadata["dataset_fingerprint_sha256"] == rep["dataset_fingerprint_sha256"]
+
+
+def test_predictions_survive_a_save_reload_cycle(tmp_path):
+    from nethawk.features.adapters import DatasetFeatureAdapter
+    from nethawk.detection.classifier import normalize_label
+
+    dataset = load_demo(rows_per_class=80, seed=3)
+    result = ml_model.train(dataset, seed=5)
+    model_path, _ = ml_model.save(result, tmp_path / "m.joblib", tmp_path / "m.json")
+    reloaded = Predictor(model_path, auto_train=False)
+
+    adapter = DatasetFeatureAdapter()
+    rows = dataset.frame.head(120)
+    direct = [normalize_label(v) for v in
+              result.model.predict(rows[FEATURE_NAMES].astype(float))]
+    through_predictor = [reloaded.predict(adapter.extract_features(row))["attack_type"]
+                         for _, row in rows.iterrows()]
+    assert direct == through_predictor

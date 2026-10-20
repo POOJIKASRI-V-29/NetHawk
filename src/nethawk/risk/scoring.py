@@ -40,14 +40,31 @@ class RiskResult:
     components: dict[str, float] = field(default_factory=dict)
 
 
+def _finite(value: object) -> float:
+    """Coerce a feature value to a finite, non-negative float.
+
+    NaN and infinity must not reach the score.  Before this guard a record of
+    NaN rates produced intensity 100 - i.e. missing data looked exactly like a
+    maximum-rate flood - because NaN silently won the min()/max() comparisons.
+    """
+    try:
+        number = float(value)                       # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number) or number < 0.0:
+        return 0.0
+    return number
+
+
 def traffic_intensity(features: dict) -> float:
     """Normalise packet-rate and byte-rate into a single 0-100 intensity term.
 
     A logarithmic scale is used because flood traffic is orders of magnitude
     above normal traffic; a linear scale would saturate immediately.
     """
-    pps = max(float(features.get("Flow Packets/s", 0.0) or 0.0), 0.0)
-    bps = max(float(features.get("Flow Bytes/s", 0.0) or 0.0), 0.0)
+    features = features or {}
+    pps = _finite(features.get("Flow Packets/s"))
+    bps = _finite(features.get("Flow Bytes/s"))
     pps_term = math.log10(1.0 + pps) / math.log10(1.0 + REF_PACKETS_PER_SEC)
     bps_term = math.log10(1.0 + bps) / math.log10(1.0 + REF_BYTES_PER_SEC)
     intensity = 100.0 * max(0.0, min(1.0, 0.6 * pps_term + 0.4 * bps_term))
@@ -55,8 +72,8 @@ def traffic_intensity(features: dict) -> float:
     # A rate computed over one or two packets is not a sustained load: a
     # 2-packet scan flow lasting 200 microseconds reports thousands of
     # packets/s.  Damp the term until the flow is long enough to mean it.
-    packets = (float(features.get("Total Fwd Packets", 0.0) or 0.0)
-               + float(features.get("Total Backward Packets", 0.0) or 0.0))
+    packets = (_finite(features.get("Total Fwd Packets"))
+               + _finite(features.get("Total Backward Packets")))
     if packets < MIN_PACKETS_FOR_FULL_INTENSITY:
         intensity *= packets / MIN_PACKETS_FOR_FULL_INTENSITY
     return round(intensity, 2)

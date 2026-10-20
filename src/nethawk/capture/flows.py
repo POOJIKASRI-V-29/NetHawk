@@ -5,7 +5,7 @@ A flow is flushed once it has been idle for LIVE_FLOW_TIMEOUT seconds; the
 accumulated statistics are then converted into the NetHawk feature vector by
 LiveTrafficFeatureAdapter.  The statistics collected here mirror the
 CIC-IDS2017 definitions closely enough to be fed to the same model, but they
-are NOT computed by CICFlowMeter - see docs/architecture.md for the caveat.
+are NOT computed by CICFlowMeter - see docs/ARCHITECTURE.md for the caveat.
 """
 from __future__ import annotations
 

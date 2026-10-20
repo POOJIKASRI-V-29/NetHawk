@@ -80,6 +80,13 @@ def load_cicids(directory: Path | None = None,
     frame = frame.drop_duplicates().reset_index(drop=True)
     removed = before - len(frame)
 
+    if frame.empty:
+        raise ValueError(
+            f"The {len(files)} CSV file(s) in "
+            f"{directory or config.CICIDS_DIR} contained no usable rows after "
+            f"cleaning. Check that they are CIC-IDS2017 flow exports "
+            f"(see data/README.md).")
+
     dataset = LoadedDataset(frame=frame, source=SOURCE_CICIDS,
                             files=[p.name for p in files])
     dataset.duplicates_removed = removed

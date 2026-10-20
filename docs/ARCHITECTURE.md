@@ -181,4 +181,4 @@ No absolute paths are hardcoded anywhere.
 | 5. Live prediction | Implemented and **verified** — real captured packets analysed on `lo0` and `en0` (docs/TESTING.md §4c) |
 | 6. Desktop application | Implemented — CustomTkinter console |
 | 7. Response + logging | Implemented — policy engine + SQLite (responses simulated) |
-| 8. Testing + packaging | Testing implemented (110 tests, see docs/TESTING.md); PyInstaller packaging is **not** implemented |
+| 8. Testing + packaging | **Complete** — 156 tests (docs/TESTING.md) and a PyInstaller bundle that builds and runs (packaging/nethawk.spec, unsigned) |

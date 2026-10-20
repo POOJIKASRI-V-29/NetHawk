@@ -1,14 +1,27 @@
 # NetHawk — demonstration script
 
-Total time: about 4 minutes. Everything below works offline, with no root
-privileges, and transmits nothing on any network.
+**Total time: about 6 minutes**, timed per step below. Everything except the
+optional live-capture step works **fully offline**, needs **no privileges**, and
+**transmits nothing** on any network.
+
+| Step | What it shows | Time |
+|------|---------------|------|
+| 0 | Clean start | 20 s |
+| 1 | Launch, mode and provenance badges | 15 s |
+| 2 | Background monitoring | 30 s |
+| 3 | Security simulation — the escalation ladder | 60 s |
+| 4 | One detection in full, with the risk arithmetic | 60 s |
+| 4b | **Real packets** via PCAP replay | 45 s |
+| 5 | Persisted events in SQLite | 30 s |
+| 6 | Live capture (optional, needs permissions) | 45 s |
+| 7 | Honest limitations | 30 s |
 
 ## Before the review (once)
 
 ```bash
 cd nethawk
 python3 -m pip install -r requirements.txt
-python3 -m pytest          # expect: 110 passed
+python3 -m pytest          # expect: 156 passed
 python3 scripts/train_model.py
 python3 scripts/make_sample_pcap.py    # builds the sample capture for replay mode
 python3 scripts/check_capture.py       # confirms whether live mode will work
@@ -24,6 +37,25 @@ python3 -c "import sys; sys.path.insert(0,'src'); from nethawk.database.db impor
 
 ---
 
+## Step 0 — Clean start (20 s)
+
+```bash
+cd nethawk
+python3 scripts/run_demo.py --fresh --duration 1 --step-delay 0
+```
+
+That empties the database and confirms the pipeline runs. Then close it and
+launch the app for the demonstration proper.
+
+If you prefer a single command that does everything from an empty state:
+
+```bash
+python3 app.py
+```
+
+It generates the demo dataset, trains the model and creates the database on
+first run if any of them are missing.
+
 ## The demonstration
 
 ### Step 1 — Launch (15 s)
@@ -33,7 +65,10 @@ python3 app.py
 ```
 
 Point out the header: **NETWORK STATUS: MONITORING**, **MODE: DEMO**,
-**MODEL: DEMO DATA**.
+**MODEL: DEMO DATA**. All three are live readings, not labels — the MODEL badge
+reads `DEMO DATA` because `models/metrics.json` records
+`data_source: DEMO_SYNTHETIC`, and it would read `CIC-IDS2017` after retraining
+on the real dataset.
 
 > Say: "NetHawk starts in demo mode, which generates traffic locally. The
 > model badge shows it was trained on the bundled synthetic dataset, not on
@@ -174,12 +209,52 @@ anyway.
 
 ---
 
-## Backup plan (if the GUI misbehaves)
+### Step 7 — State the limitations yourself (30 s)
 
-Run the terminal version, which prints the entire pipeline and a full report:
+Say these before you are asked; it is worth more than being caught:
+
+1. The shipped model is trained on **our own synthetic dataset**, so the 0.998
+   figure measures the generator, not real intrusion detection.
+2. NetHawk analyses **IP/TCP/UDP flows** captured from a Wi-Fi interface — not
+   802.11 frames. No deauthentication, evil-twin or rogue-AP detection.
+3. Every response is **simulated**; no network is modified.
+4. On real replayed packets there are **false positives** on benign HTTPS and
+   DNS, which we report in `docs/TESTING.md` rather than tuning away.
+
+---
+
+## Backup plans
+
+**If the GUI misbehaves** — the terminal path runs the identical pipeline and
+prints every stage plus a report:
 
 ```bash
 python3 scripts/run_demo.py --fresh
+```
+
+**If live capture is unavailable** — replay still demonstrates real packet
+parsing with no privileges:
+
+```bash
+python3 app.py --replay
+```
+
+**If Python or the dependencies misbehave on the demo machine** — use the
+packaged build, which carries its own interpreter and libraries:
+
+```bash
+./dist/NetHawk/NetHawk
+./dist/NetHawk/NetHawk --replay
+```
+
+Build it beforehand with `pyinstaller packaging/nethawk.spec --noconfirm`.
+Note the bundle is unsigned: on a Mac that did not build it, right-click →
+Open the first time.
+
+**If you need to show where data lives:**
+
+```bash
+python3 app.py --paths
 ```
 
 ---

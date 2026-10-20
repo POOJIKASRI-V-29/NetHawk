@@ -242,11 +242,17 @@ class NetHawkEngine:
 
     def stop_monitoring(self) -> None:
         if not self.monitoring:
+            self._stop_replay()
             return
         self._stop.set()
         if self._live is not None:
             self._live.stop()
             self._live = None
+        if self._replay is not None:
+            # A replay in progress must be stopped too, or its reader and
+            # watcher threads outlive the engine.
+            self._replay.stop()
+            self._replay = None
         if self._demo_thread is not None:
             self._demo_thread.join(timeout=3.0)
             self._demo_thread = None
@@ -261,6 +267,12 @@ class NetHawkEngine:
                               events_logged=self.stats.events_processed,
                               note="monitoring stopped")
         self.notice("Monitoring stopped.", "info")
+
+    def _stop_replay(self) -> None:
+        """Stop a replay that is running without monitoring being active."""
+        if self._replay is not None:
+            self._replay.stop()
+            self._replay = None
 
     def switch_mode(self, mode: str) -> str:
         was_running = self.monitoring
@@ -342,15 +354,27 @@ class NetHawkEngine:
                     f"(real Scapy dissection, no privileges needed).", "warning")
 
         if blocking:
-            flows = self._replay.read_all()
+            try:
+                flows = self._replay.read_all()
+            except Exception as exc:
+                # A bad capture file is a user-input problem, not a crash.
+                self.notice(f"Could not read {Path(path).name}: "
+                            f"{type(exc).__name__}: {exc}", "error")
+                return 0
             self.notice(f"Replay complete: {self._replay.packet_count} packets parsed, "
                         f"{flows} flows analysed.", "success")
             return analysed["flows"]
 
         def _watch() -> None:
-            self._replay.wait(timeout=120)
-            self.notice(f"Replay complete: {self._replay.packet_count} packets parsed, "
-                        f"{analysed['flows']} flows analysed.", "success")
+            replay = self._replay
+            if replay is None:
+                return
+            replay.wait(timeout=120)
+            if replay.last_error:
+                self.notice(f"Replay failed: {replay.last_error}", "error")
+            else:
+                self.notice(f"Replay complete: {replay.packet_count} packets parsed, "
+                            f"{analysed['flows']} flows analysed.", "success")
             self._emit("stats", stats=self.stats.as_dict())
 
         if self._replay.start():

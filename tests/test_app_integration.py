@@ -83,3 +83,60 @@ def test_report_is_written_to_disk(tmp_path):
     engine.process_record(engine.demo_generator.random_attack_record())
     path = write_report(engine.db, engine.predictor, tmp_path / "out.txt")
     assert path.exists() and path.read_text().startswith("NETHAWK SECURITY REPORT")
+
+
+# ----------------------------------------------------------- packaging ----
+def test_packaging_spec_exists_and_is_valid_python():
+    """The PyInstaller spec must stay parseable and reference the real entry point."""
+    import ast
+    spec = config.PROJECT_ROOT / "packaging" / "nethawk.spec"
+    assert spec.exists(), "packaging/nethawk.spec is missing"
+    source = spec.read_text()
+    ast.parse(source)                       # a spec file is Python
+    assert "app.py" in source
+    assert "collect_submodules(\"scapy.layers\")" in source
+
+
+def test_frozen_layout_relocates_writable_paths(monkeypatch, tmp_path):
+    """In a bundle, generated files must leave the read-only bundle directory."""
+    import importlib
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(_sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    for var in ("NETHAWK_DB_PATH", "NETHAWK_DATA_DIR", "NETHAWK_MODELS_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    frozen = importlib.reload(config)
+    try:
+        assert frozen.FROZEN is True
+        assert frozen.BUNDLE_DIR == tmp_path / "bundle"
+        assert "Application Support" in str(frozen.WRITABLE_ROOT)
+        # nothing writable may live inside the bundle
+        assert frozen.BUNDLE_DIR not in frozen.DB_PATH.parents
+        assert frozen.BUNDLE_DIR not in frozen.MODEL_PATH.parents
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_seed_from_bundle_is_a_noop_when_not_frozen():
+    assert config.FROZEN is False
+    assert config.seed_from_bundle() == []
+
+
+def test_describe_paths_reports_the_run_mode():
+    text = config.describe_paths()
+    assert "source checkout" in text
+    assert str(config.DB_PATH) in text
+
+
+def test_entry_point_calls_freeze_support():
+    """A frozen build respawns helpers; without this they re-run the app."""
+    source = (config.PROJECT_ROOT / "app.py").read_text()
+    assert "multiprocessing.freeze_support()" in source
+
+
+def test_inference_is_single_threaded(predictor):
+    """Parallel inference spawns helper processes in a frozen build."""
+    assert getattr(predictor.model, "n_jobs", None) == 1

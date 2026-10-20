@@ -20,3 +20,8 @@ data/demo/*.pcap        # regenerated on demand by the app
 
 .DS_Store
 .pytest_cache/
+
+# PyInstaller build output (regenerate with: pyinstaller packaging/nethawk.spec)
+dist/
+build/
+*.spec.bak

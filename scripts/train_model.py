@@ -74,7 +74,18 @@ def main() -> int:
     print("  top features       :")
     for item in m["top_features"][:6]:
         print(f"      {item['feature']:<28} {item['importance']:.4f}")
+    if m.get("single_class_warning"):
+        print(f"\n  WARNING: {m['single_class_warning']}")
     print(f"\n  CAVEAT: {m['caveat']}")
+    rep = m["reproducibility"]
+    print("\n  REPRODUCIBILITY")
+    print(f"    seed / test_size : {rep['random_seed']} / {rep['test_size']}")
+    print(f"    split            : {rep['split']}")
+    print(f"    data fingerprint : {rep['dataset_fingerprint_sha256']}")
+    print(f"    repeat with      : {rep['command']}")
+    print(f"    versions         : python {rep['library_versions']['python']}, "
+          f"scikit-learn {rep['library_versions']['scikit-learn']}, "
+          f"pandas {rep['library_versions']['pandas']}")
     print(f"\n[NetHawk] Model   -> {model_path}")
     print(f"[NetHawk] Metrics -> {metrics_path}")
     return 0
