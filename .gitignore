@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Runtime artifacts
+database/*.db
+database/*.db-journal
+logs/
+reports/
+models/*.joblib
+models/metrics.json
+
+# Datasets are NOT committed (CIC-IDS2017 is several hundred MB)
+data/cicids2017/*
+!data/cicids2017/.gitkeep
+data/demo/*.csv
+
+.DS_Store
+.pytest_cache/

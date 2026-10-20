@@ -1,0 +1,8 @@
+# NetHawk MVP dependencies (versions verified on macOS / Python 3.13)
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+joblib>=1.3
+scapy>=2.5              # live packet capture (LIVE mode); DEMO mode works without it
+customtkinter>=5.2      # desktop dashboard
+pytest>=7.4             # test suite
