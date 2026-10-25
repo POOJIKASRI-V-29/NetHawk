@@ -23,6 +23,7 @@ from typing import Callable
 
 from .flows import Flow, aggregate_micro_flows
 from .live import LiveCapture
+from .wifi import ManagementFrameAlert, ManagementFrameDetector
 
 
 class PcapReplay(LiveCapture):
@@ -32,16 +33,30 @@ class PcapReplay(LiveCapture):
                  path: Path | str,
                  flow_timeout: float | None = None,
                  on_packet: Callable[[dict], None] | None = None,
-                 use_file_timestamps: bool = True) -> None:
+                 use_file_timestamps: bool = True,
+                 on_wifi_alert: Callable[[ManagementFrameAlert], None] | None = None,
+                 wifi_threshold: int = 10,
+                 wifi_window_seconds: float = 5.0) -> None:
         super().__init__(on_flow=on_flow, interface=None,
                          flow_timeout=flow_timeout, on_packet=on_packet)
         self.path = Path(path)
         self.use_file_timestamps = use_file_timestamps
+        self.on_wifi_alert = on_wifi_alert
+        self.wifi_detector = ManagementFrameDetector(
+            threshold=wifi_threshold, window_seconds=wifi_window_seconds
+        )
         self._thread: threading.Thread | None = None
         self.finished = threading.Event()
 
     def available(self) -> bool:
         return self.path.exists() and self.path.stat().st_size > 0
+
+    def _handle_replay_packet(self, packet) -> None:
+        """Inspect captured Wi-Fi management frames, then process normal traffic."""
+        alert = self.wifi_detector.observe(packet)
+        if alert is not None and self.on_wifi_alert is not None:
+            self.on_wifi_alert(alert)
+        self._handle_packet(packet)
 
     # ------------------------------------------------------------- reading ---
     def read_all(self) -> int:
@@ -56,7 +71,7 @@ class PcapReplay(LiveCapture):
 
         # store=False keeps memory flat; prn is the same handler LIVE mode uses.
         # stop_filter lets stop() interrupt a long replay instead of waiting.
-        sniff(offline=str(self.path), prn=self._handle_packet, store=False,
+        sniff(offline=str(self.path), prn=self._handle_replay_packet, store=False,
               stop_filter=lambda _pkt: self._stop.is_set())
 
         flows = aggregate_micro_flows(self.table.collect_expired(force=True))

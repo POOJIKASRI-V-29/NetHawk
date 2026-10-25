@@ -349,7 +349,14 @@ class NetHawkEngine:
             except Exception as exc:
                 self.notice(f"Replay analysis error: {exc}", "error")
 
-        self._replay = PcapReplay(on_flow=on_flow, path=path)
+        def on_wifi_alert(alert) -> None:
+            self.notice(alert.message, "warning")
+
+        self._replay = PcapReplay(
+            on_flow=on_flow,
+            path=path,
+            on_wifi_alert=on_wifi_alert,
+        )
         self.notice(f"Replaying {Path(path).name} through the live packet path "
                     f"(real Scapy dissection, no privileges needed).", "warning")
 

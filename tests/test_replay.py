@@ -143,3 +143,71 @@ def test_aggregation_preserves_packet_and_flag_totals():
     assert len(merged) == 1
     assert merged[0].packet_count == 24
     assert merged[0].flags["SYN"] == 24
+
+def test_replay_emits_wifi_management_frame_alert(tmp_path):
+    """Replay alerts on repeated deauthentication frames in an offline PCAP."""
+    from scapy.all import Dot11, Dot11Deauth, wrpcap
+
+    path = tmp_path / "wifi-management.pcap"
+    packets = []
+    for timestamp in (1000.0, 1001.0):
+        packet = (
+            Dot11(
+                type=0,
+                subtype=12,
+                addr1="00:11:22:33:44:55",
+                addr2="66:77:88:99:aa:bb",
+                addr3="00:11:22:33:44:55",
+            )
+            / Dot11Deauth(reason=7)
+        )
+        packet.time = timestamp
+        packets.append(packet)
+
+    wrpcap(str(path), packets)
+    alerts = []
+    replay = PcapReplay(
+        on_flow=lambda flow: None,
+        path=path,
+        on_wifi_alert=alerts.append,
+        wifi_threshold=2,
+        wifi_window_seconds=5.0,
+    )
+
+    replay.read_all()
+
+    assert len(alerts) == 1
+    assert alerts[0].kind == "deauthentication"
+    assert alerts[0].count == 2
+def test_engine_emits_wifi_deauthentication_notice(tmp_path):
+    """Offline Wi-Fi management frames should reach the engine notice channel."""
+    from scapy.all import Dot11, Dot11Deauth, RadioTap, wrpcap
+
+    path = tmp_path / "wifi_deauth.pcap"
+    packets = []
+    for i in range(10):
+        packet = (
+            RadioTap()
+            / Dot11(
+                type=0,
+                subtype=12,
+                addr1="ff:ff:ff:ff:ff:ff",
+                addr2="00:11:22:33:44:55",
+                addr3="00:11:22:33:44:55",
+            )
+            / Dot11Deauth(reason=7)
+        )
+        packet.time = 1_700_000_000.0 + i * 0.1
+        packets.append(packet)
+
+    wrpcap(str(path), packets)
+
+    engine = NetHawkEngine(database=Database(tmp_path / "wifi.db"))
+    notices = []
+    engine.on_message = lambda m: (
+        notices.append(m.payload["text"]) if m.kind == "notice" else None
+    )
+
+    engine.replay_pcap(path, blocking=True)
+
+    assert any("deauthentication" in notice.lower() for notice in notices), notices
